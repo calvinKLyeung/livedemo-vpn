@@ -35,9 +35,7 @@ int main (void) {
         inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip); // turn binary address of IP to char arr 
         printf("got %zd bytes from %s:%d\n", n, ip, ntohs(from.sin_port));
 
-
-        // TODO: send the same n bytes back to 'from' using sendto().
-        //       Hint: the last two arguments are (struct sockaddr *)&from and len.
+        // send the same n bytes back to 'from' using sendto().
         ssize_t sent_n = sendto(s, buf, n, 0, (struct sockaddr *)&from, len);
         if (sent_n < 0) die("sendto");
     }
