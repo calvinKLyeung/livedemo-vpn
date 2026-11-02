@@ -1,0 +1,15 @@
+# .gitignore
+*.o
+*.dSYM/
+.DS_Store
+.venv/
+udp_echo_server
+udp_echo_client
+tunprint
+tunfwd
+tunrecv
+mini-vpn
+keygen
+vpn.key
+*.pcap
+*.json
