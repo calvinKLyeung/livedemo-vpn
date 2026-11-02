@@ -41,5 +41,8 @@ int main (void) {
         ssize_t sent_n = sendto(s, buf, n, 0, (struct sockaddr *)&from, len);
         if (sent_n < 0) die("sendto");
     }
+
+
+    return 0;
 }
 
