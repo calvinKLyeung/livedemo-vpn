@@ -45,6 +45,23 @@ size_t seal_packet(const uint8_t *in, size_t n, uint8_t *out) {
 }
 
 
+static unsigned long bad_packets = 0;
+// decrypt from in to out, return plaintext len 
+// or return -1 if packet is bad, like tampered, wrong key, len problem? 
+ssize_t open_packet(const uint8_t *in, size_t n, uint8_t *out) {
+    if (n < HDR + TAG) return -1; 
+
+    unsigned long long mlen;    // message plaintext len 
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt(
+            out , &mlen, NULL,
+            in + HDR, n - HDR,  // ciphertext + tag 
+            in, HDR,            // same header as additional data 
+            in + 8, key         // nonce 
+        ) != 0)                 // non 0 means failed 
+        return -1; 
+    
+    return (ssize_t) mlen;
+}
 
 
 int main(int argc, char **argv) {
@@ -55,9 +72,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char path[10];
     // vpnkey 
-    load_key(path);  // path as placeholder for now 
+    load_key("vpn.key"); 
 
     char ifname[IFNAMSIZ];
     int tun  = tun_open(ifname, sizeof ifname);
@@ -101,7 +117,8 @@ int main(int argc, char **argv) {
             ssize_t n = tun_read(tun, buf, sizeof buf);
             if (n < 0) die("tun_read");
             if (n == 0 || !have_peer) continue;        // server: with no client yet
-
+            
+            // Encrypt and send 
             uint8_t sealed[2000 + HDR + TAG];
             size_t sealed_len = seal_packet(buf, n, sealed);
             sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
@@ -113,18 +130,28 @@ int main(int argc, char **argv) {
             // sendto() that address when tun0 gets packet 
             struct sockaddr_in from;  
             socklen_t len = sizeof from;
-            ssize_t n = recvfrom(sock, buf, sizeof buf, 0, (struct sockaddr *)&from, &len);
+
+            // Receive and decrypt 
+            uint8_t sealed[2000 + HDR + TAG];
+            ssize_t n = recvfrom(sock, sealed, sizeof sealed, 0, (struct sockaddr *)&from, &len);
             if (n < 0) die("recvfrom");
 
-            if (is_server) { // remember where the client is to reply to
+            ssize_t m = open_packet(sealed, n, buf);   // drop stuffs that fails 
+            if (m < 0) {
+                bad_packets++;
+                fprintf(stderr, "dropped bad packet (%lu so far)\n", bad_packets);  
+                continue;
+            }
+
+            // Reply checks 
+
+
+            if (is_server) { // only trust and remember peer starting from here 
                 peer = from; 
                 have_peer = 1; 
             }
-            if (tun_write(tun, buf, n) < 0) perror("tun_write"); // not exist on single bad packet 
+            if (tun_write(tun, buf, m) < 0) perror("tun_write"); // not exist on single bad packet 
             
-
-            // Note: current design == any one who send to port 5555 of the server 
-            // will auto become the peer lol 
         }
     }
 
