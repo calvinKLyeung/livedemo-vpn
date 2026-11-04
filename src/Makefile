@@ -4,5 +4,8 @@ LDLIBS = $(shell pkg-config --libs libsodium)
 mini-vpn: mini-vpn.c common.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
+keygen: keygen.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
 clean:
 	rm -f min-vpn

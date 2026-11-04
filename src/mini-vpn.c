@@ -9,6 +9,19 @@
 #include "common.h"
 #include <stdio.h>
 #include <poll.h>
+#include <sodium.h>
+
+static unsigned char key[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+
+void load_key(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) die("open key file");
+    if (fread(key, 1, sizeof key, f) != sizeof key) {
+        fprintf(stderr, "key file must be exactly %zu bytes\n", sizeof key);
+        exit(1);
+    }
+    fclose(f);
+}
 
 int main(int argc, char **argv) {
     int is_server = (argc == 2 && strcmp(argv[1], "-s") == 0);
@@ -17,6 +30,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: myvpn -s | myvpn -c SERVER_IP\n");
         return 1;
     }
+
+    char path[10];
+    // vpnkey 
+    load_key(path);  // path as placeholder for now 
 
     char ifname[IFNAMSIZ];
     int tun  = tun_open(ifname, sizeof ifname);
