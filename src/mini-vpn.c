@@ -23,6 +23,30 @@ void load_key(const char *path) {
     fclose(f);
 }
 
+#define HDR 32                                          // 8 bytes counter for order and 24 bytes nonce as required 
+#define TAG crypto_aead_xchacha20poly1305_ietf_ABYTES   // 16 
+
+static uint64_t send_counter = 0; 
+
+// encrypt packet from in to out, and return updated byte size 
+size_t seal_packet(const uint8_t *in, size_t n, uint8_t *out) {
+    put_be64(out, ++send_counter);   // 0-7 bytes, counter 
+    randombytes_buf(out + 8, 24);    // 8-31 bytes, nonce 
+
+    unsigned long long clen;    // ciphertext len 
+    crypto_aead_xchacha20poly1305_ietf_encrypt(
+        out + HDR, &clen, 
+        in, n,
+        out, HDR,               // authentucated 
+        NULL, out + 8, key
+    );
+    return HDR + clen;       // encrypted data len n + 16 bytes tag seal
+
+}
+
+
+
+
 int main(int argc, char **argv) {
     int is_server = (argc == 2 && strcmp(argv[1], "-s") == 0);
     int is_client = (argc == 3 && strcmp(argv[1], "-c") == 0);
@@ -77,7 +101,10 @@ int main(int argc, char **argv) {
             ssize_t n = tun_read(tun, buf, sizeof buf);
             if (n < 0) die("tun_read");
             if (n == 0 || !have_peer) continue;        // server: with no client yet
-            sendto(sock, buf, n, 0, (struct sockaddr *)&peer, sizeof peer);
+
+            uint8_t sealed[2000 + HDR + TAG];
+            size_t sealed_len = seal_packet(buf, n, sealed);
+            sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
         }
     
 

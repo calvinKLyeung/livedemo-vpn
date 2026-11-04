@@ -90,6 +90,7 @@ ssize_t tun_write(int fd, const uint8_t *buf, size_t len) { return write(fd, buf
 #endif
 
 /* ---------- portable big-endian helpers (macOS has no htobe64) ---------- */
+// basically host to big endian 64 but for mac lol
 void put_be64(uint8_t *p, uint64_t v) {
     for (int i = 7; i >= 0; i--) { p[i] = v & 0xff; v >>= 8; }
 }
