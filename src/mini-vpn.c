@@ -83,6 +83,16 @@ int main(int argc, char **argv) {
     int tun  = tun_open(ifname, sizeof ifname);
     printf("using %s\n", ifname);        // Mac: utun# ; server: tun0
 
+    // Give the new tunnel interface its own IP address (auto add a route to it), and fire it up 
+    char cmd[256];
+    #ifdef __APPLE__
+    snprintf(cmd, sizeof cmd, "ifconfig %s 10.8.0.2 10.8.0.1 mtu 1400 up", ifname);
+    #else
+    snprintf(cmd, sizeof cmd, "ip addr add 10.8.0.1/24 dev %s && ip link set %s up mtu 1400",ifname, ifname);
+    #endif
+    if (system(cmd) != 0) { fprintf(stderr, "failed: %s\n", cmd); exit(1); }
+
+
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) die("socket");
 
@@ -110,6 +120,7 @@ int main(int argc, char **argv) {
         { .fd = sock, .events = POLLIN },
     };
 
+    
     uint8_t buf[2048];
     
     for (;;) {
