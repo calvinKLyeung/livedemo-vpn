@@ -94,6 +94,7 @@ ssize_t tun_write(int fd, const uint8_t *buf, size_t len) { return write(fd, buf
 void put_be64(uint8_t *p, uint64_t v) {
     for (int i = 7; i >= 0; i--) { p[i] = v & 0xff; v >>= 8; }
 }
+// read 64 and translate big endian back to host
 uint64_t get_be64(const uint8_t *p) {
     uint64_t v = 0;
     for (int i = 0; i < 8; i++) v = (v << 8) | p[i];

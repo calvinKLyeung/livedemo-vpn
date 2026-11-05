@@ -11,7 +11,17 @@
 #include <poll.h>
 #include <sodium.h>
 
+#define HDR 32                                          // 8 bytes counter for order and 24 bytes nonce as required 
+#define TAG crypto_aead_xchacha20poly1305_ietf_ABYTES   // 16 
+
 static unsigned char key[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+
+// tracking packets 
+static uint64_t send_counter = 0;           // out going packet track
+static unsigned long bad_packets = 0;       // failed decryption 
+static unsigned long replays = 0;           // old or repeated counter
+static uint64_t highest_seen = 0;           // highest counter accepted so far 
+
 
 void load_key(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -22,11 +32,6 @@ void load_key(const char *path) {
     }
     fclose(f);
 }
-
-#define HDR 32                                          // 8 bytes counter for order and 24 bytes nonce as required 
-#define TAG crypto_aead_xchacha20poly1305_ietf_ABYTES   // 16 
-
-static uint64_t send_counter = 0; 
 
 // encrypt packet from in to out, and return updated byte size 
 size_t seal_packet(const uint8_t *in, size_t n, uint8_t *out) {
@@ -44,8 +49,6 @@ size_t seal_packet(const uint8_t *in, size_t n, uint8_t *out) {
 
 }
 
-
-static unsigned long bad_packets = 0;
 // decrypt from in to out, return plaintext len 
 // or return -1 if packet is bad, like tampered, wrong key, len problem? 
 ssize_t open_packet(const uint8_t *in, size_t n, uint8_t *out) {
@@ -73,6 +76,7 @@ int main(int argc, char **argv) {
     }
 
     // vpnkey 
+    if (sodium_init() < 0) { fprintf(stderr, "sodium_init failed\n"); return 1; }
     load_key("vpn.key"); 
 
     char ifname[IFNAMSIZ];
@@ -119,7 +123,7 @@ int main(int argc, char **argv) {
             if (n == 0 || !have_peer) continue;        // server: with no client yet
             
             // Encrypt and send 
-            uint8_t sealed[2000 + HDR + TAG];
+            uint8_t sealed[sizeof buf + HDR + TAG];
             size_t sealed_len = seal_packet(buf, n, sealed);
             sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
         }
@@ -132,7 +136,7 @@ int main(int argc, char **argv) {
             socklen_t len = sizeof from;
 
             // Receive and decrypt 
-            uint8_t sealed[2000 + HDR + TAG];
+            uint8_t sealed[sizeof buf + HDR + TAG];
             ssize_t n = recvfrom(sock, sealed, sizeof sealed, 0, (struct sockaddr *)&from, &len);
             if (n < 0) die("recvfrom");
 
@@ -144,6 +148,12 @@ int main(int argc, char **argv) {
             }
 
             // Reply checks 
+            uint64_t counter = get_be64(sealed);
+            if (counter <= highest_seen) {
+                replays++;
+                continue;   // seen or older, drop 
+            }
+            highest_seen = counter; 
 
 
             if (is_server) { // only trust and remember peer starting from here 
