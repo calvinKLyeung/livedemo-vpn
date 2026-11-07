@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <poll.h>
 #include <sodium.h>
+#include <time.h>
 
 #define HDR 32                                          // 8 bytes counter for order and 24 bytes nonce as required 
 #define TAG crypto_aead_xchacha20poly1305_ietf_ABYTES   // 16 
@@ -21,6 +22,11 @@ static uint64_t send_counter = 0;           // out going packet track
 static unsigned long bad_packets = 0;       // failed decryption 
 static unsigned long replays = 0;           // old or repeated counter
 static uint64_t highest_seen = 0;           // highest counter accepted so far 
+
+// flags for argv 
+static int tamper = 0, replay = 0;
+static unsigned long last_printed_bad = 0;
+static unsigned long last_printed_replays = 0;
 
 
 void load_key(const char *path) {
@@ -68,10 +74,27 @@ ssize_t open_packet(const uint8_t *in, size_t n, uint8_t *out) {
 
 
 int main(int argc, char **argv) {
-    int is_server = (argc == 2 && strcmp(argv[1], "-s") == 0);
-    int is_client = (argc == 3 && strcmp(argv[1], "-c") == 0);
+    int is_server = 0;
+    const char *server_ip = NULL;
+    for (int i = 1; i < argc; i++) {
+        if      (!strcmp(argv[i], "-s"))                 is_server = 1;
+        else if (!strcmp(argv[i], "-c") && i + 1 < argc) server_ip = argv[++i];
+        else if (!strcmp(argv[i], "--tamper"))           tamper = 1;
+        else if (!strcmp(argv[i], "--replay"))           replay = 1;
+        else { 
+            // unknown flags 
+            server_ip = NULL; 
+            is_server = 0; 
+            break; 
+        }  
+    }
+    int is_client = (server_ip != NULL);
+    if (is_server && is_client) {
+        fprintf(stderr, "choose -s or -c, not both\n");
+        return 1;
+    }
     if (!is_server && !is_client) {
-        fprintf(stderr, "usage: myvpn -s | myvpn -c SERVER_IP\n");
+        fprintf(stderr, "usage: mini-vpn -s | mini-vpn -c SERVER_IP [--tamper] [--replay]\n");
         return 1;
     }
 
@@ -99,16 +122,17 @@ int main(int argc, char **argv) {
     struct sockaddr_in peer = {0};    // who we send to
     int have_peer = 0;                // flag to remember if we have peer client/server
 
-    if (is_server) {                  // server: listen on 5555
+    
+    if (is_server) {                      // server: listen on 5555
         struct sockaddr_in me = {0};
         me.sin_family = AF_INET;
         me.sin_port = htons(5555);
         me.sin_addr.s_addr = htonl(INADDR_ANY);
         if (bind(sock, (struct sockaddr *)&me, sizeof me) < 0) die("bind");
-    } else {                          // client: we know the server
+    } else {// is_client                      // client: we know the server
         peer.sin_family = AF_INET;
         peer.sin_port = htons(5555);
-        if (inet_pton(AF_INET, argv[2], &peer.sin_addr) != 1) {
+        if (inet_pton(AF_INET, server_ip, &peer.sin_addr) != 1) {
             fprintf(stderr, "bad IP\n"); return 1;
         }
         have_peer = 1;
@@ -120,14 +144,25 @@ int main(int argc, char **argv) {
         { .fd = sock, .events = POLLIN },
     };
 
-    
+
     uint8_t buf[2048];
+
+    time_t last_report = time(NULL); 
     
     for (;;) {
-        // -1 means wait forever 
-        if (poll(fds, 2, -1) < 0) die("poll");
-    
+        // wake up once a sec 
+        if (poll(fds, 2, 1000) < 0) die("poll");  // poll wait for packet OR 1 sec at most 
+        
+        // every 3 secs, if bad or replays updated, print status 
+        if (time(NULL) - last_report >= 3 &&
+            (bad_packets != last_printed_bad || replays != last_printed_replays)) {
+            fprintf(stderr, "stats: bad_packets=%lu replays=%lu\n", bad_packets, replays);
+            last_printed_bad = bad_packets;
+            last_printed_replays = replays;
+            last_report = time(NULL);
+        }
 
+    
         if (fds[0].revents & POLLIN) {                 // tunnel -> network
             ssize_t n = tun_read(tun, buf, sizeof buf);
             if (n < 0) die("tun_read");
@@ -136,7 +171,13 @@ int main(int argc, char **argv) {
             // Encrypt and send 
             uint8_t sealed[sizeof buf + HDR + TAG];
             size_t sealed_len = seal_packet(buf, n, sealed);
+
+            if (tamper && send_counter % 10 == 0){
+                sealed[40] ^= 0x01;                 // flip one bit inside the ciphertext
+            }
             sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
+            if (replay) // send the exact same bytes again, like a replay attack
+                sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
         }
     
 
