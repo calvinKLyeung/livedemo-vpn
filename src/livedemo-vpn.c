@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!is_server && !is_client) {
-        fprintf(stderr, "usage: mini-vpn -s | mini-vpn -c SERVER_IP [--tamper] [--replay]\n");
+        fprintf(stderr, "usage: livedemo-vpn -s | livedemo-vpn -c SERVER_IP [--tamper] [--replay]\n");
         return 1;
     }
 

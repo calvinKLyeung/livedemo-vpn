@@ -8,7 +8,7 @@ udp_echo_client
 tunprint
 tunfwd
 tunrecv
-mini-vpn
+livedemo-vpn
 keygen
 vpn.key
 *.pcap
