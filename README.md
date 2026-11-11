@@ -42,6 +42,27 @@ sudo ./livedemo-vpn -c SERVER_IP         # Mac
 ping 10.8.0.1
 ```
 
+## Live Demo mode
+
+Put a local app online at `http://SERVER_IP:8080`.
+
+```
+visitor → SERVER_IP:8080 → tunnel → Mac :3000
+```
+
+One-time: open TCP 8080 (Anywhere-IPv4) in the EC2 security group.
+
+```sh
+ping 10.8.0.1                                        # keep the tunnel awake
+python3 -m http.server 3000                          # app must listen on 0.0.0.0
+./scripts/expose.sh   -s SERVER_IP -i KEY.pem 3000   # go live
+./scripts/unexpose.sh -s SERVER_IP -i KEY.pem 3000   # stop
+```
+
+Live in about 30 seconds : )
+
+**Limitations:** plain HTTP from visitors to the server; your Mac must stay awake and connected.
+
 ## Design
 
 - **UDP:** avoids TCP-over-TCP meltdown, and one datagram = one packet.
