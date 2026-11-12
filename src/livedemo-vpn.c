@@ -74,11 +74,13 @@ ssize_t open_packet(const uint8_t *in, size_t n, uint8_t *out) {
 
 
 int main(int argc, char **argv) {
+    const char *keyfile = "vpn.key";  // default key name 
     int is_server = 0;
     const char *server_ip = NULL;
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "-s"))                 is_server = 1;
         else if (!strcmp(argv[i], "-c") && i + 1 < argc) server_ip = argv[++i];
+        else if (!strcmp(argv[i], "-k") && i + 1 < argc) keyfile = argv[++i];
         else if (!strcmp(argv[i], "--tamper"))           tamper = 1;
         else if (!strcmp(argv[i], "--replay"))           replay = 1;
         else { 
@@ -94,13 +96,14 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!is_server && !is_client) {
-        fprintf(stderr, "usage: livedemo-vpn -s | livedemo-vpn -c SERVER_IP [--tamper] [--replay]\n");
+        fprintf(stderr, "usage: livedemo-vpn -s [-k KEY] | livedemo-vpn -c SERVER_IP [-k KEY] [--tamper] [--replay]\n");
         return 1;
     }
 
+
     // vpnkey 
     if (sodium_init() < 0) { fprintf(stderr, "sodium_init failed\n"); return 1; }
-    load_key("vpn.key"); 
+    load_key(keyfile); 
 
     char ifname[IFNAMSIZ];
     int tun  = tun_open(ifname, sizeof ifname);
@@ -110,8 +113,8 @@ int main(int argc, char **argv) {
     char cmd[256];
     #ifdef __APPLE__
     snprintf(cmd, sizeof cmd, "ifconfig %s 10.8.0.2 10.8.0.1 mtu 1400 up", ifname);
-    #else
-    snprintf(cmd, sizeof cmd, "ip addr add 10.8.0.1/24 dev %s && ip link set %s up mtu 1400",ifname, ifname);
+    #else  // else case for linux client 
+    snprintf(cmd, sizeof cmd, "ip addr add %s/24 dev %s && ip link set %s up mtu 1400", (is_server ? "10.8.0.1" : "10.8.0.2"), ifname, ifname);
     #endif
     if (system(cmd) != 0) { fprintf(stderr, "failed: %s\n", cmd); exit(1); }
 
@@ -203,6 +206,7 @@ int main(int argc, char **argv) {
             uint64_t counter = get_be64(sealed);
             if (counter <= highest_seen) {
                 replays++;
+                fprintf(stderr, "dropped replay (%lu so far)\n", replays);
                 continue;   // seen or older, drop 
             }
             highest_seen = counter; 
