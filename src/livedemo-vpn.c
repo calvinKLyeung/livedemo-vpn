@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
         if (bind(sock, (struct sockaddr *)&me, sizeof me) < 0) die("bind");
     } else {// is_client                      // client: we know the server
         peer.sin_family = AF_INET;
-        peer.sin_port = htons(5555);
+        peer.sin_port = 5555; // htons(5555);
         if (inet_pton(AF_INET, server_ip, &peer.sin_addr) != 1) {
             fprintf(stderr, "bad IP\n"); return 1;
         }

@@ -59,7 +59,7 @@ stop_pair() { kill $CLI $SRV 2>/dev/null; wait $CLI $SRV 2>/dev/null; }
 # ping 10.8.0.1 from the client and check if exits with 0
 start_pair basic "$TMP/good.key"
 check "ping through the tunnel" ip netns exec ld-cli ping -c 3 -W 2 10.8.0.1
-head -c 5000000 /dev/urandom > "$TMP/big.bin"  # make 5mb file 
+head -c 5000000 /dev/urandom > "$TMP/big.bin"  # make 5mb file
 ip netns exec ld-srv python3 -m http.server 8000 --bind 10.8.0.1 --directory "$TMP" >/dev/null 2>&1 & WEB=$!
 sleep 1
 # Download a 5 MB random file over the tunnel and compare it byte for byte
