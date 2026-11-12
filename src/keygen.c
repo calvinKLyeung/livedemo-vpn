@@ -2,18 +2,28 @@
 #include <sodium.h>
 
 int main(int argc, char **argv) {
-    const char *path = argc > 1 ? argv[1] : "vpn.key";  // defulat key name 
+    if (argc != 2 || sodium_init() < 0) {
+        fprintf(stderr, "usage: %s NAME_OF_KEY\n", argv[0]);
+        return 1;  // returns 0 on success, -1 on failure, and 1 if the library had already been initialized
+    }
+    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+    unsigned char sk[crypto_sign_SECRETKEYBYTES];
+    crypto_sign_keypair(pk, sk);
 
-    // returns 0 on success, -1 on failure, and 1 if the library had already been initialized
-    if (sodium_init() < 0) { fprintf(stderr, "sodium_init failed\n"); return 1; }
+    char path[256];
+    snprintf(path, sizeof path, "%s.pk", argv[1]);
 
-    unsigned char key[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];   // 32 bytes
-    crypto_aead_xchacha20poly1305_ietf_keygen(key);
-
-    FILE *f = fopen(path, "wb");
-    if (!f) { perror("fopen"); return 1; }
-    fwrite(key, 1, sizeof key, f);
+    FILE *f = fopen(path, "wb"); 
+    if (!f) { perror(path); return 1; }
+    fwrite(pk, 1, sizeof pk, f); 
     fclose(f);
-    printf("wrote %s (%zu bytes)\n", path, sizeof key);
+    snprintf(path, sizeof path, "%s.sk", argv[1]);
+    f = fopen(path, "wb");
+    if (!f) { perror(path); return 1; }
+    fwrite(sk, 1, sizeof sk, f);
+    fclose(f);
+
+    char hex[2 * sizeof pk + 1];
+    printf("%s\n", sodium_bin2hex(hex, sizeof hex, pk, sizeof pk));
     return 0;
 }
