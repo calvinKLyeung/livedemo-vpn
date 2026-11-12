@@ -8,7 +8,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libsodium-dev pkg-config
       - run: make -C src
-      - run: sudo ./tests/tunnel_test.sh
+      - run: sudo bash ./tests/tunnel_test.sh
 
   macos-build:
     runs-on: macos-latest
