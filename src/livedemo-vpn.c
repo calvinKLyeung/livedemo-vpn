@@ -12,75 +12,206 @@
 #include <sodium.h>
 #include <time.h>
 
-#define HDR 32                                          // 8 bytes counter for order and 24 bytes nonce as required 
-#define TAG crypto_aead_xchacha20poly1305_ietf_ABYTES   // 16 
+/* DATA */
+#define HDR (1 + 8 + 24)      /* type + counter + nonce = 33 (was 32) */
+#define TAG crypto_aead_xchacha20poly1305_ietf_ABYTES
+/* HANDSHAKE and SESSION */
+#define TYPE_HELLO    1 
+#define TYPE_RESPONSE 2
+#define TYPE_DATA     3
+#define PK            32   /* kx and sign public keys are both 32 bytes */
+#define SIGNATURE     crypto_sign_BYTES          /* 64 */
+#define HELLO_LEN     (1 + PK + PK + SIGNATURE)  /* 129 */
+#define RESPONSE_LEN  (1 + PK + SIGNATURE)       /* 97 */
+#define MAX_CLIENTS 16
 
-static unsigned char key[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+// HELLO signs:     ["LiveDemoVPN hello v1"]   [client eph_pk]
+// RESPONSE signs:  ["LiveDemoVPN response v1"][server eph_pk][client eph_pk]
+/* preset Contexts */
+static const char CTX_HELLO[]    = "LiveDemoVPN hello v1";
+static const char CTX_RESPONSE[] = "LiveDemoVPN response v1";
 
-// tracking packets 
-static uint64_t send_counter = 0;           // out going packet track
+struct session {
+    uint8_t  rx[crypto_kx_SESSIONKEYBYTES];  // receive 
+    uint8_t  tx[crypto_kx_SESSIONKEYBYTES];  // transmit 
+    uint64_t send_ctr, highest;              // should use window instead?
+    int      up;
+};
+static struct session sess; 
+
+static uint8_t my_pk[PK], my_sk[crypto_sign_SECRETKEYBYTES];
+static uint8_t server_pk[PK];           /* client only: the pinned server key */
+
+/* track allowed clients */
+static uint8_t allowed[MAX_CLIENTS][PK];
+static int n_allowed = 0;
+
+/* track bad packets or replays */
 static unsigned long bad_packets = 0;       // failed decryption 
 static unsigned long replays = 0;           // old or repeated counter
-static uint64_t highest_seen = 0;           // highest counter accepted so far 
 
-// flags for argv 
+/* flags for argv */
 static int tamper = 0, replay = 0;
 static unsigned long last_printed_bad = 0;
 static unsigned long last_printed_replays = 0;
 
+/* Client Hello */
+static uint8_t eph_pk[PK];
+static uint8_t eph_sk[crypto_kx_SECRETKEYBYTES];
+static uint8_t hello_pkt[HELLO_LEN];
+static time_t  last_hello; 
 
-void load_key(const char *path) {
+
+void read_key(const char *path, uint8_t *buf, size_t len) {
     FILE *f = fopen(path, "rb");
-    if (!f) die("open key file");
-    if (fread(key, 1, sizeof key, f) != sizeof key) {
-        fprintf(stderr, "key file must be exactly %zu bytes\n", sizeof key);
+    if (!f) die(path);
+    if (fread(buf, 1, len, f) != len) { 
+        fprintf(stderr, "%s: wrong size\n", path);
         exit(1);
     }
     fclose(f);
 }
 
+void load_allowlist(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) die(path);
+
+    char line[256]; 
+    while (n_allowed < MAX_CLIENTS && fgets(line, sizeof line, f)) {
+        size_t got = 0;
+        if (line[0] == '#' || line[0] == '\n') continue;
+        if (sodium_hex2bin(allowed[n_allowed], PK, line, strlen(line), " \r\n", &got, NULL) == 0 && got == PK)
+            n_allowed++;
+    }
+    fclose(f);
+    fprintf(stderr, "%d authorized client(s)\n", n_allowed);
+}
+
+int is_authorized(const uint8_t *pk) {
+    for (int i = 0; i < n_allowed; i++)
+        if (sodium_memcmp(allowed[i], pk, PK) == 0) return 1;
+    return 0;
+}
+
+// WHO ARE YOU?      identity keys (my_pk/my_sk)  -> signature    -> "it's really the Mac"
+// AGREE ON A SECRET ephemeral keys (eph_pk/sk)   -> Diffie–Hellman -> shared secret
+// LOCK THE TRAFFIC  session keys (tx/rx)         -> XChaCha20    -> encrypted DATA
+
+/* Client: build and send initial Hello */
+void start_handshake(void) {
+    crypto_kx_keypair(eph_pk, eph_sk);            /* pick a secret key and computes public key */
+    /* [CTX_HELLO][eph_pk]  for Signing only, never send */
+    uint8_t msg[sizeof CTX_HELLO + PK];           
+    memcpy(msg, CTX_HELLO, sizeof CTX_HELLO);     // copy hello mssage
+    memcpy(msg + sizeof CTX_HELLO, eph_pk, PK);   // copy public key
+    /* [type][my_pk][eph_pk][signature]  for Sending */
+    hello_pkt[0] = TYPE_HELLO;                    // set type hello flag
+    memcpy(hello_pkt + 1, my_pk, PK);             // copy Identity public key 
+    memcpy(hello_pkt + 1 + PK, eph_pk, PK);       // copy ephemeral Public  key 
+    /* seal msg with the Mac's secret identity key; write the 64-byte signature into bytes 65–128 */
+    crypto_sign_detached(hello_pkt + 1 + 2 * PK, NULL, msg, sizeof msg, my_sk);
+    sess.up = 0;
+    last_hello = 0;                                /* send on the next loop pass */
+}
+
+/* Server: check Hello and reply to it */
+int handle_hello(const uint8_t *in, size_t n, uint8_t *resp) {
+    if (n != HELLO_LEN) return -1; 
+    const uint8_t *cli_id = in + 1, *cli_eph = in + 1 + PK, *sig = in + 1 + 2 * PK;
+
+    // if not authorized identity public key on the list
+    if (!is_authorized(cli_id)) { fprintf(stderr, "unknown client\n"); return -1; }
+    uint8_t msg[sizeof CTX_HELLO + PK];
+    memcpy(msg, CTX_HELLO, sizeof CTX_HELLO);
+    memcpy(msg + sizeof CTX_HELLO, cli_eph, PK);
+    if (crypto_sign_verify_detached(sig, msg, sizeof msg, cli_id) != 0) {
+        fprintf(stderr, "bad client signature\n");
+        return -1; 
+    }
+    /* Server ephemeral keys */
+    uint8_t s_pk[PK], s_sk[crypto_kx_SECRETKEYBYTES];
+    crypto_kx_keypair(s_pk, s_sk);
+    if (crypto_kx_server_session_keys(sess.rx, sess.tx, s_pk, s_sk, cli_eph) != 0) return -1; // check the cli_eph math is valid 
+    sodium_memzero(s_sk, sizeof s_sk);   // replace with zeros for forward secrecy 
+    sess.send_ctr = 0; sess.highest = 0; sess.up = 1;
+
+    /* Response message */
+    uint8_t rmsg[sizeof CTX_RESPONSE + 2 * PK];
+    memcpy(rmsg, CTX_RESPONSE, sizeof CTX_RESPONSE);
+    memcpy(rmsg + sizeof CTX_RESPONSE, s_pk, PK);
+    memcpy(rmsg + sizeof CTX_RESPONSE + PK, cli_eph, PK); // tie reply to hello 
+    resp[0] = TYPE_RESPONSE; 
+    memcpy(resp + 1, s_pk, PK);
+    crypto_sign_detached(resp + 1 + PK, NULL, rmsg, sizeof rmsg, my_sk);
+    return 0; 
+}
+
+/* Client: check Response and derive the keys */
+int handle_response(const uint8_t *in, size_t n) {
+   if (n != RESPONSE_LEN || sess.up) return -1; 
+   const uint8_t *s_eph = in + 1, *sig = in + 1 + PK;
+
+    uint8_t rmsg[sizeof CTX_RESPONSE + 2 * PK];
+    memcpy(rmsg, CTX_RESPONSE, sizeof CTX_RESPONSE);
+    memcpy(rmsg + sizeof CTX_RESPONSE, s_eph, PK);
+    memcpy(rmsg + sizeof CTX_RESPONSE + PK, eph_pk, PK);
+    if (crypto_sign_verify_detached(sig, rmsg, sizeof rmsg, server_pk) != 0) {
+        fprintf(stderr, "bad server signature\n"); return -1;     /* probably a impostor lol */
+    }
+    if (crypto_kx_client_session_keys(sess.rx, sess.tx, eph_pk, eph_sk, s_eph) != 0) return -1;
+    sodium_memzero(eph_sk, sizeof eph_sk);
+    sess.send_ctr = 0; sess.highest = 0; sess.up = 1;
+    return 0;
+}
+
 // encrypt packet from in to out, and return updated byte size 
-size_t seal_packet(const uint8_t *in, size_t n, uint8_t *out) {
-    put_be64(out, ++send_counter);   // 0-7 bytes, counter 
-    randombytes_buf(out + 8, 24);    // 8-31 bytes, nonce 
+size_t seal_packet(struct session *s, const uint8_t *in, size_t n, uint8_t *out) {
+    out[0] = TYPE_DATA;
+    put_be64(out + 1, ++s->send_ctr);   
+    randombytes_buf(out + 9, 24);    
 
     unsigned long long clen;    // ciphertext len 
     crypto_aead_xchacha20poly1305_ietf_encrypt(
         out + HDR, &clen, 
         in, n,
-        out, HDR,               // authentucated 
-        NULL, out + 8, key
-    );
-    return HDR + clen;       // encrypted data len n + 16 bytes tag seal
-
+        out, HDR,       // authenticated 
+        NULL, out + 9, 
+        s->tx);
+    return HDR + clen;       
 }
 
 // decrypt from in to out, return plaintext len 
 // or return -1 if packet is bad, like tampered, wrong key, len problem? 
-ssize_t open_packet(const uint8_t *in, size_t n, uint8_t *out) {
+ssize_t open_packet(struct session *s, const uint8_t *in, size_t n, uint8_t *out, uint64_t *ctr) {
     if (n < HDR + TAG) return -1; 
 
     unsigned long long mlen;    // message plaintext len 
     if (crypto_aead_xchacha20poly1305_ietf_decrypt(
-            out , &mlen, NULL,
-            in + HDR, n - HDR,  // ciphertext + tag 
-            in, HDR,            // same header as additional data 
-            in + 8, key         // nonce 
-        ) != 0)                 // non 0 means failed 
-        return -1; 
-    
+        out, &mlen, NULL, 
+        in + HDR, n - HDR,  // ciphertext + tag 
+        in, HDR,            // same header as additional data 
+        in + 9, s->rx       // nonce 
+    ) != 0)                 // non 0 means failed 
+        return -1;
+
+    *ctr = get_be64(in + 1);   // read the counter from the packet, and hand it back to the caller
     return (ssize_t) mlen;
 }
 
 
 int main(int argc, char **argv) {
-    const char *keyfile = "vpn.key";  // default key name 
-    int is_server = 0;
+    const char *keyfile = NULL; 
+    const char *pinned_file = NULL;      // client: -p server.pk
+    const char *allow_file = NULL;       // server: -a authorized_clients
     const char *server_ip = NULL;
+    int is_server = 0;
+
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "-s"))                 is_server = 1;
         else if (!strcmp(argv[i], "-c") && i + 1 < argc) server_ip = argv[++i];
         else if (!strcmp(argv[i], "-k") && i + 1 < argc) keyfile = argv[++i];
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc) pinned_file = argv[++i];
+        else if (!strcmp(argv[i], "-a") && i + 1 < argc) allow_file  = argv[++i];
         else if (!strcmp(argv[i], "--tamper"))           tamper = 1;
         else if (!strcmp(argv[i], "--replay"))           replay = 1;
         else { 
@@ -95,15 +226,22 @@ int main(int argc, char **argv) {
         fprintf(stderr, "choose -s or -c, not both\n");
         return 1;
     }
-    if (!is_server && !is_client) {
-        fprintf(stderr, "usage: livedemo-vpn -s [-k KEY] | livedemo-vpn -c SERVER_IP [-k KEY] [--tamper] [--replay]\n");
+    if (!is_server && !is_client) { // -k is now required for handshake
+        fprintf(stderr, "usage: livedemo-vpn -s -k KEY.sk -a ALLOWLIST | -c SERVER_IP -k KEY.sk -p SERVER.pk [--tamper] [--replay]\n");
+        return 1;
+    }
+    if (!keyfile || (is_server && !allow_file) || (is_client && !pinned_file)) { // -k is now required for handshake
+        fprintf(stderr, "usage: livedemo-vpn -s -k KEY.sk -a ALLOWLIST | -c SERVER_IP -k KEY.sk -p SERVER.pk\n");
         return 1;
     }
 
 
-    // vpnkey 
+    // identity keys set up 
     if (sodium_init() < 0) { fprintf(stderr, "sodium_init failed\n"); return 1; }
-    load_key(keyfile); 
+    read_key(keyfile, my_sk, sizeof my_sk);
+    crypto_sign_ed25519_sk_to_pk(my_pk, my_sk);        /* public key from the secret key */
+    if (!is_server) read_key(pinned_file, server_pk, sizeof server_pk);
+    if (is_server) load_allowlist(allow_file);
 
     char ifname[IFNAMSIZ];
     int tun  = tun_open(ifname, sizeof ifname);
@@ -149,8 +287,10 @@ int main(int argc, char **argv) {
 
 
     uint8_t buf[2048];
-
     time_t last_report = time(NULL); 
+
+    /* initial start*/
+    if (is_client) start_handshake();  /* build the first HELLO; the loop sends it */
     
     for (;;) {
         // wake up once a sec 
@@ -164,18 +304,22 @@ int main(int argc, char **argv) {
             last_printed_replays = replays;
             last_report = time(NULL);
         }
+        time_t now = time(NULL);
+        if (!is_server && !sess.up && now - last_hello >= 2) {
+            sendto(sock, hello_pkt, HELLO_LEN, 0, (struct sockaddr *)&peer, sizeof peer);
+            last_hello = now;
+        }
 
     
         if (fds[0].revents & POLLIN) {                 // tunnel -> network
             ssize_t n = tun_read(tun, buf, sizeof buf);
             if (n < 0) die("tun_read");
-            if (n == 0 || !have_peer) continue;        // server: with no client yet
+            if (n == 0 || !sess.up || !have_peer) continue;        // no session yet: drop it, TCP will resend
             
             // Encrypt and send 
             uint8_t sealed[sizeof buf + HDR + TAG];
-            size_t sealed_len = seal_packet(buf, n, sealed);
-
-            if (tamper && send_counter % 10 == 0){
+            size_t sealed_len = seal_packet(&sess, buf, n, sealed);
+            if (tamper && sess.send_ctr % 10 == 0){
                 sealed[40] ^= 0x01;                 // flip one bit inside the ciphertext
             }
             sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
@@ -187,38 +331,54 @@ int main(int argc, char **argv) {
         if (fds[1].revents & POLLIN) {                 // network -> tunnel
             // remember from address of last valid packet 
             // sendto() that address when tun0 gets packet 
-            struct sockaddr_in from;  
+            struct sockaddr_in from;                   // who sent this packet
             socklen_t len = sizeof from;
-
-            // Receive and decrypt 
-            uint8_t sealed[sizeof buf + HDR + TAG];
-            ssize_t n = recvfrom(sock, sealed, sizeof sealed, 0, (struct sockaddr *)&from, &len);
-            if (n < 0) die("recvfrom");
-
-            ssize_t m = open_packet(sealed, n, buf);   // drop stuffs that fails 
-            if (m < 0) {
-                bad_packets++;
-                fprintf(stderr, "dropped bad packet (%lu so far)\n", bad_packets);  
-                continue;
-            }
-
-            // Reply checks 
-            uint64_t counter = get_be64(sealed);
-            if (counter <= highest_seen) {
-                replays++;
-                fprintf(stderr, "dropped replay (%lu so far)\n", replays);
-                continue;   // seen or older, drop 
-            }
-            highest_seen = counter; 
-
-
-            if (is_server) { // only trust and remember peer starting from here 
-                peer = from; 
-                have_peer = 1; 
-            }
-            if (tun_write(tun, buf, m) < 0) perror("tun_write"); // not exist on single bad packet 
+            uint8_t pkt[sizeof buf + HDR + TAG];       // raw packet from the network
+            uint8_t *plain = buf;                      // decrypted DATA goes into buf
             
+            ssize_t n = recvfrom(sock, pkt, sizeof pkt, 0, (struct sockaddr *)&from, &len);
+            if (n < 0) die("recvfrom");                // Should try to keep this alive instead???
+            if (n < 1) continue;
+
+            switch (pkt[0]) {
+            case TYPE_HELLO: {
+                if (is_server) {
+                    uint8_t resp[RESPONSE_LEN];
+                    if (handle_hello(pkt, n, resp) == 0) {
+                        peer = from; 
+                        have_peer = 1;
+                        sendto(sock, resp, RESPONSE_LEN, 0, (struct sockaddr *)&peer, sizeof peer);
+                        fprintf(stderr, "session up\n");
+                    }
+                }
+                break;
+            }
+            case TYPE_RESPONSE: {
+                if (!is_server && handle_response(pkt, n) == 0) fprintf(stderr, "session up\n");
+                break;
+            }
+            case TYPE_DATA: {
+                uint64_t ctr;
+                if (!sess.up) break;
+                ssize_t m = open_packet(&sess, pkt, n, plain, &ctr);
+                if (m < 0) { 
+                    bad_packets++; 
+                    fprintf(stderr, "dropped bad packet (%lu so far)\n", bad_packets); 
+                    break; 
+                }
+                if (ctr <= sess.highest) {                //Maybe should add WIndow feature???
+                    replays++; 
+                    fprintf(stderr, "dropped replay (%lu so far)\n", replays); 
+                    break;
+                }
+                sess.highest = ctr;
+                if (is_server) peer = from;              /* follow the client to a new address */
+                if (m > 0) tun_write(tun, plain, m);     /* m == 0 is a keepalive, maybe should improve this ??? */ 
+                break;
+            }
+            default:
+                break;                                   /* ignore unknown type of data */
+            }
         }
     }
-
 }
