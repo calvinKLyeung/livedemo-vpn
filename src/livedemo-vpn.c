@@ -310,8 +310,8 @@ int main(int argc, char **argv) {
             last_hello = now;
         }
 
-    
-        if (fds[0].revents & POLLIN) {                 // tunnel -> network
+        /* tunnel -> network */
+        if (fds[0].revents & POLLIN) {            
             ssize_t n = tun_read(tun, buf, sizeof buf);
             if (n < 0) die("tun_read");
             if (n == 0 || !sess.up || !have_peer) continue;        // no session yet: drop it, TCP will resend
@@ -327,8 +327,8 @@ int main(int argc, char **argv) {
                 sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
         }
     
-
-        if (fds[1].revents & POLLIN) {                 // network -> tunnel
+        /* network -> tunnel */
+        if (fds[1].revents & POLLIN) {                 
             // remember from address of last valid packet 
             // sendto() that address when tun0 gets packet 
             struct sockaddr_in from;                   // who sent this packet
