@@ -2,7 +2,7 @@
 
 ![tests](https://github.com/calvinKLyeung/livedemo-vpn/actions/workflows/test.yml/badge.svg)
 
-A minimal VPN in ~200 lines of C, built to understand how tools like WireGuard work.
+A minimal VPN in ~400 lines of C, built to understand how tools like WireGuard work.
 Client: macOS (`utun`). Server: Linux (`tun`). Learning project, not for real use.
 
 ## How it works
@@ -35,12 +35,13 @@ A single `poll()` loop on each side watches both the tunnel fd and the UDP socke
 ## Quick start
 
 ```sh
-gcc -O2 livedemo-vpn.c common.c -o livedemo-vpn $(pkg-config --cflags --libs libsodium)
-gcc keygen.c -o keygen $(pkg-config --cflags --libs libsodium)
-./keygen && chmod 600 vpn.key            # copy the same vpn.key to the server
+make -C src && cd src
+./keygen server && chmod 600 server.sk   # server
+./keygen mac && chmod 600 mac.sk         # Mac: paste the printed key into the server's authorized_clients
+                                         # Mac: copy server.pk from the server
 
-sudo ./livedemo-vpn -s                   # server (open UDP 5555)
-sudo ./livedemo-vpn -c SERVER_IP         # Mac
+sudo ./livedemo-vpn -s -k server.sk -a authorized_clients   # server (open UDP 5555)
+sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk     # Mac
 ping 10.8.0.1
 ```
 
@@ -69,23 +70,24 @@ Live in about 30 seconds : )
 
 - **UDP:** avoids TCP-over-TCP meltdown, and one datagram = one packet.
 - **Portable:** `#ifdef __APPLE__` handles utun's 4-byte header.
-- **Packet:** `[counter 8][nonce 24][ciphertext + tag 16]`, with MTU 1400.
-- **Crypto:** XChaCha20-Poly1305 (libsodium). The header is authenticated but not encrypted.
-- **Replay protection:** the receiver drops any counter it has already seen.
+- **Handshake:** HELLO and RESPONSE swap fresh X25519 keys, signed with each side's long-term Ed25519 key. The server checks an allow-list; the client checks a pinned server key.
+- **Packet:** `[type 1][counter 8][nonce 24][ciphertext + tag 16]`, with MTU 1400.
+- **Crypto:** XChaCha20-Poly1305 (libsodium) with fresh send and receive keys per session. The header is authenticated but not encrypted.
+- **Replay protection:** the receiver drops any counter it has already seen in the session.
 
 ## Self-tests
 
-Restart both ends before each test.
+`sudo ./tests/tunnel_test.sh` runs 9 checks in network namespaces (also on every push via GitHub Actions). By hand:
 
 **Tamper:** flips one bit in every 10th packet.
 ```sh
-sudo ./livedemo-vpn -c SERVER_IP --tamper
+sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk --tamper
 ping -c 30 10.8.0.1   # expect 10% loss; server shows bad_packets=3
 ```
 
 **Replay:** sends every packet twice.
 ```sh
-sudo ./livedemo-vpn -c SERVER_IP --replay
+sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk --replay
 ping -c 30 10.8.0.1   # expect 0% loss, no (DUP!); server shows replays=30
 ```
 
@@ -105,12 +107,12 @@ livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overh
 
 ## Limitations
 
-Pre-shared key (no handshake or forward secrecy), one client, no replay window, client restart requires a server restart, IPv4 only.
+One client at a time, no replay window, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
 
 ## What I learned
 
 A VPN turned out to be simpler than I expected at its core: a tun device is just a network interface whose "wire" is a file descriptor, and the VPN is a loop that encrypts packets between it and a UDP socket. The hard parts were everything around that loop: routing (a missing host route makes the tunnel send its own packets into itself), NAT on the server, and getting nonces and replay counters right. Benchmarking showed the cost is per packet (system calls and copies), not encryption.
 
-One surprise: after restarting only the client, 29 of 30 pings failed. The server still remembered the highest counter from the previous session, so it dropped every new packet as a replay until the counter passed the old value. The replay protection was working exactly as designed, which showed me why real VPNs use a handshake to start each session with fresh keys and counters.
+One surprise: after restarting only the client, 29 of 30 pings failed. The server still remembered the highest counter from the previous session, so it dropped every new packet as a replay until the counter passed the old value. The replay protection was working exactly as designed, which showed me why real VPNs use a handshake to start each session with fresh keys and counters. Adding one fixed it: a restarted client now just reconnects.
 
 I also learned that a VPN hides traffic from outer firewalls but not from the server's own: AWS only saw encrypted UDP on port 5555, while ufw saw the unwrapped TCP from the tunnel and dropped it until I allowed `tun0`.
