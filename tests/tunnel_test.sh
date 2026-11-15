@@ -39,52 +39,80 @@ ip -n ld-srv link set veth-srv up; ip -n ld-cli link set veth-cli up
 
 
 
-start_pair() {                 # start_pair NAME CLIENT_KEY [client flags...], fresh every time 
-  local name=$1 key=$2; shift 2
-  ip netns exec ld-srv $BIN -s -k "$TMP/good.key" >"$TMP/$name.server.log" 2>&1 & SRV=$!  # start server 
-  wait_for_tun ld-srv || return 1
-  ip netns exec ld-cli $BIN -c 192.168.100.1 -k "$key" "$@" >"$TMP/$name.client.log" 2>&1 & CLI=$!   # start client 
-  wait_for_tun ld-cli || return 1
+start_server() {               # once, at the start
+  ip netns exec ld-srv $BIN -s -k "$TMP/srv.sk" -a "$TMP/allowed" >"$TMP/server.log" 2>&1 & SRV=$!
+  wait_for_tun ld-srv
 }
 
-stop_pair() { kill $CLI $SRV 2>/dev/null; wait $CLI $SRV 2>/dev/null; }
+start_client() {               # start_client KEY PINNED [flags...]
+  local key=$1 pinned=$2; shift 2
+  ip netns exec ld-cli $BIN -c 192.168.100.1 -k "$key" -p "$pinned" "$@" >"$TMP/client.log" 2>&1 & CLI=$!
+  wait_for_tun ld-cli
+}
+
+wait_for_session() {           # until the client logs "session up" (max 5 s)
+  for i in $(seq 1 50); do
+    grep -q "session up" "$TMP/client.log" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+stop_client() { kill $CLI 2>/dev/null; wait $CLI 2>/dev/null; }
 
 
+# SET UP 
+./src/keygen "$TMP/srv"      >/dev/null
+./src/keygen "$TMP/cli"      > "$TMP/allowed"     # the client's public key is the allow-list
+./src/keygen "$TMP/stranger" >/dev/null
+./src/keygen "$TMP/fakesrv"  >/dev/null
+# server: $BIN -s -k "$TMP/srv.sk" -a "$TMP/allowed"
+# client: $BIN -c 192.168.100.1 -k CLIENT.sk -p PINNED.pk
 
-./src/keygen "$TMP/good.key" >/dev/null
-./src/keygen "$TMP/wrong.key" >/dev/null
-
+# SERVER starts 
+start_server 
 # 1-2. basic tunnel and a big transfer (tests MTU and buffers)
 # Check if tunnel works at all
 # ping 10.8.0.1 from the client and check if exits with 0
-start_pair basic "$TMP/good.key"
+start_client "$TMP/cli.sk" "$TMP/srv.pk"
 check "ping through the tunnel" ip netns exec ld-cli ping -c 3 -W 2 10.8.0.1
 head -c 5000000 /dev/urandom > "$TMP/big.bin"  # make 5mb file
 ip netns exec ld-srv python3 -m http.server 8000 --bind 10.8.0.1 --directory "$TMP" >/dev/null 2>&1 & WEB=$!
 sleep 1
 # Download a 5 MB random file over the tunnel and compare it byte for byte
 check "5 MB download arrives intact" bash -c "ip netns exec ld-cli curl -s --max-time 30 http://10.8.0.1:8000/big.bin | cmp - '$TMP/big.bin'"
-kill $WEB; stop_pair
+kill $WEB; 
+stop_client
 
 # 3. tampered packets are rejected
 # Client runs --tamper (flips a bit in every 10th packet), sends 20 pings
-start_pair tamper "$TMP/good.key" --tamper
+start_client "$TMP/cli.sk" "$TMP/srv.pk" --tamper
 ip netns exec ld-cli ping -c 20 -i 0.2 -W 1 10.8.0.1 >/dev/null 2>&1
-check "server rejects tampered packets" grep -q "dropped bad packet" "$TMP/tamper.server.log"
-stop_pair
+check "server rejects tampered packets" grep -q "dropped bad packet" "$TMP/server.log"
+stop_client
 
 # 4-5. replays are rejected, real traffic still works
 # Client runs --replay (sends every packet twice), pings
-start_pair replay "$TMP/good.key" --replay
+start_client "$TMP/cli.sk" "$TMP/srv.pk" --replay
 check "ping works while replays are sent" ip netns exec ld-cli ping -c 3 -W 2 10.8.0.1
-check "server rejects replays" grep -q "dropped replay" "$TMP/replay.server.log"
-stop_pair
+check "server rejects replays" grep -q "dropped replay" "$TMP/server.log"
+stop_client
 
-# 6. the wrong key gets nowhere
-# Client uses wrong.key
-start_pair wrongkey "$TMP/wrong.key"
-check "wrong key cannot ping" bash -c "! ip netns exec ld-cli ping -c 2 -W 1 10.8.0.1"
-stop_pair
+# 6. unknown client and imposter server 
+start_client "$TMP/cli.sk" "$TMP/srv.pk"
+check "ping through the tunnel" ip netns exec ld-cli ping -c 3 -W 2 10.8.0.1
+stop_client
+start_client "$TMP/cli.sk" "$TMP/srv.pk"
+check "client restart reconnects" ip netns exec ld-cli ping -c 3 -W 2 10.8.0.1
+stop_client
+
+start_client "$TMP/cli.sk" "$TMP/fakesrv.pk"; sleep 3
+check "client refuses an impostor server" grep -q "bad server signature" "$TMP/client.log"
+stop_client
+
+start_client "$TMP/stranger.sk" "$TMP/srv.pk"; sleep 3
+check "server ignores unknown clients" grep -q "unknown client" "$TMP/server.log"
+stop_client
 
 echo; echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
