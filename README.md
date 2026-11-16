@@ -34,15 +34,31 @@ A single `poll()` loop on each side watches both the tunnel fd and the UDP socke
 
 ## Quick start
 
+**First-time setup**
+
+On the server:
 ```sh
 make -C src && cd src
-./keygen server && chmod 600 server.sk   # server
-./keygen mac && chmod 600 mac.sk         # Mac: paste the printed key into the server's authorized_clients
-                                         # Mac: copy server.pk from the server
+./keygen server && chmod 600 server.sk
+```
 
+On the Mac:
+```sh
+make -C src && cd src
+./keygen mac && chmod 600 mac.sk          # prints the Mac's public key
+scp -i KEY.pem ubuntu@SERVER_IP:~/livedemo-vpn/src/server.pk .   # copy the server's public key
+```
+
+Back on the server, allow the Mac:
+```sh
+echo "MAC_PUBLIC_KEY_HEX" > authorized_clients
+```
+
+**Run the VPN**
+```sh
 sudo ./livedemo-vpn -s -k server.sk -a authorized_clients   # server (open UDP 5555)
 sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk     # Mac
-ping 10.8.0.1
+ping 10.8.0.1                                               # test the tunnel
 ```
 
 ## Live Demo mode
