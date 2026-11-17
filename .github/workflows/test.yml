@@ -7,14 +7,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libsodium-dev pkg-config
+      - run: make -C src test
       - run: make -C src
       - run: sudo bash ./tests/tunnel_test.sh
-      - run: make -C src test
 
   macos-build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - run: brew install libsodium pkg-config
-      - run: make -C src
       - run: make -C src test
+      - run: make -C src
