@@ -11,6 +11,7 @@
 #include <poll.h>
 #include <sodium.h>
 #include <time.h>
+#include "replay.h"
 
 /* DATA */
 #define HDR (1 + 8 + 24)      /* type + counter + nonce = 33 (was 32) */
@@ -34,7 +35,8 @@ static const char CTX_RESPONSE[] = "LiveDemoVPN response v1";
 struct session {
     uint8_t  rx[crypto_kx_SESSIONKEYBYTES];  // receive 
     uint8_t  tx[crypto_kx_SESSIONKEYBYTES];  // transmit 
-    uint64_t send_ctr, highest;              // should use window instead?
+    uint64_t send_ctr;
+    struct window win;
     int      up;
 };
 static struct session sess; 
@@ -133,7 +135,9 @@ int handle_hello(const uint8_t *in, size_t n, uint8_t *resp) {
     crypto_kx_keypair(s_pk, s_sk);
     if (crypto_kx_server_session_keys(sess.rx, sess.tx, s_pk, s_sk, cli_eph) != 0) return -1; // check the cli_eph math is valid 
     sodium_memzero(s_sk, sizeof s_sk);   // replace with zeros for forward secrecy 
-    sess.send_ctr = 0; sess.highest = 0; sess.up = 1;
+    sess.send_ctr = 0; 
+    window_reset(&sess.win);
+    sess.up = 1;
 
     /* Response message */
     uint8_t rmsg[sizeof CTX_RESPONSE + 2 * PK];
@@ -160,7 +164,9 @@ int handle_response(const uint8_t *in, size_t n) {
     }
     if (crypto_kx_client_session_keys(sess.rx, sess.tx, eph_pk, eph_sk, s_eph) != 0) return -1;
     sodium_memzero(eph_sk, sizeof eph_sk);
-    sess.send_ctr = 0; sess.highest = 0; sess.up = 1;
+    sess.send_ctr = 0; 
+    window_reset(&sess.win);
+    sess.up = 1;
     return 0;
 }
 
@@ -366,12 +372,11 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "dropped bad packet (%lu so far)\n", bad_packets); 
                     break; 
                 }
-                if (ctr <= sess.highest) {                //Maybe should add WIndow feature???
+                if (!replay_ok(&sess.win, ctr)) {                //Maybe should add WIndow feature???
                     replays++; 
                     fprintf(stderr, "dropped replay (%lu so far)\n", replays); 
                     break;
                 }
-                sess.highest = ctr;
                 if (is_server) peer = from;              /* follow the client to a new address */
                 if (m > 0) tun_write(tun, plain, m);     /* m == 0 is a keepalive, maybe should improve this ??? */ 
                 break;

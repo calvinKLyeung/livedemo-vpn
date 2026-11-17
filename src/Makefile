@@ -9,6 +9,13 @@ livedemo-vpn: livedemo-vpn.c common.c
 keygen: keygen.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
+test_window: test_window.c replay.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+
+test: test_window
+	./test_window
+
 clean:
 	rm -f livedemo-vpn keygen
 
