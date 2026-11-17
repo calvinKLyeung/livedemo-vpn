@@ -1,9 +1,9 @@
 CFLAGS = -Wall -Wextra -g -O2 $(shell pkg-config --cflags libsodium)
 LDLIBS = $(shell pkg-config --libs libsodium)
 
-add: livedemo-vpn keygen
+all: livedemo-vpn keygen
 
-livedemo-vpn: livedemo-vpn.c common.c
+livedemo-vpn: livedemo-vpn.c common.c replay.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 keygen: keygen.c
@@ -17,6 +17,6 @@ test: test_window
 	./test_window
 
 clean:
-	rm -f livedemo-vpn keygen
+	rm -f livedemo-vpn keygen test_window
 
 .PHONY: all clean
