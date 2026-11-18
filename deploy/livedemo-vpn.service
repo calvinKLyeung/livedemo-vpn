@@ -1,0 +1,14 @@
+[Unit]
+Description=LiveDemo VPN server
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/livedemo-vpn/server.sk
+
+[Service]
+ExecStartPre=/usr/local/sbin/livedemo-vpn-net-up
+ExecStart=/usr/local/bin/livedemo-vpn -s /etc/livedemo-vpn/server.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
