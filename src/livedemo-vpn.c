@@ -205,62 +205,99 @@ ssize_t open_packet(struct session *s, const uint8_t *in, size_t n, uint8_t *out
 }
 
 
+/* Process Conf */
+struct config {
+    char server[64], tun_addr[32], tun_peer[32];
+    char sign_key[256], server_key[256], clients[256];
+    int  port;
+};
+
+
+int load_config(const char *path, struct config *c) {
+    memset(c, 0, sizeof *c);
+    c->port = 5555;
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char line[512], k[64], v[256];
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || sscanf(line, " %63[^= ] = %255s", k, v) != 2) continue;  // accepts both "port=5555" and "port = 5555"
+
+        if      (!strcmp(k, "server"))             snprintf(c->server, sizeof c->server, "%s", v);
+        else if (!strcmp(k, "port"))               c->port = atoi(v);
+        else if (!strcmp(k, "tun_addr"))           snprintf(c->tun_addr, sizeof c->tun_addr, "%s", v);
+        else if (!strcmp(k, "tun_peer"))           snprintf(c->tun_peer, sizeof c->tun_peer, "%s", v);
+        else if (!strcmp(k, "sign_key"))           snprintf(c->sign_key, sizeof c->sign_key, "%s", v);
+        else if (!strcmp(k, "server_key"))         snprintf(c->server_key, sizeof c->server_key, "%s", v);
+        else if (!strcmp(k, "authorized_clients")) snprintf(c->clients, sizeof c->clients, "%s", v);
+        else fprintf(stderr, "config: unknown setting '%s'\n", k);
+    }
+    fclose(f);
+    return 0;
+}
+
+
+/* Confiture tunnels */
+static void run(const char *cmd) {
+    fprintf(stderr, "+ %s\n", cmd);
+    if (system(cmd) != 0) { fprintf(stderr, "failed: %s\n", cmd); exit(1); }
+}
+
+void configure_tun(const char *ifname, const struct config *c) {
+    char cmd[512];
+#ifdef __APPLE__
+    snprintf(cmd, sizeof cmd, "/sbin/ifconfig %s %s %s mtu 1400 up", ifname, c->tun_addr, c->tun_peer);
+#else
+    snprintf(cmd, sizeof cmd, "ip addr add %s dev %s && ip link set %s up mtu 1400",
+             c->tun_addr, ifname, ifname);
+#endif
+    run(cmd);
+}
+
 int main(int argc, char **argv) {
-    const char *keyfile = NULL; 
-    const char *pinned_file = NULL;      // client: -p server.pk
-    const char *allow_file = NULL;       // server: -a authorized_clients
-    const char *server_ip = NULL;
-    int is_server = 0;
+    const char *conf_file = NULL;
+    int is_server = 0, is_client = 0;
 
     for (int i = 1; i < argc; i++) {
-        if      (!strcmp(argv[i], "-s"))                 is_server = 1;
-        else if (!strcmp(argv[i], "-c") && i + 1 < argc) server_ip = argv[++i];
-        else if (!strcmp(argv[i], "-k") && i + 1 < argc) keyfile = argv[++i];
-        else if (!strcmp(argv[i], "-p") && i + 1 < argc) pinned_file = argv[++i];
-        else if (!strcmp(argv[i], "-a") && i + 1 < argc) allow_file  = argv[++i];
+        if      (!strcmp(argv[i], "-s") && i + 1 < argc) { is_server = 1; conf_file = argv[++i]; }
+        else if (!strcmp(argv[i], "-c") && i + 1 < argc) { is_client = 1; conf_file = argv[++i]; }
         else if (!strcmp(argv[i], "--tamper"))           tamper = 1;
         else if (!strcmp(argv[i], "--replay"))           replay = 1;
-        else { 
-            // unknown flags 
-            server_ip = NULL; 
-            is_server = 0; 
-            break; 
-        }  
+        else { is_server = is_client = 0; break; }       // unknown flag
     }
-    int is_client = (server_ip != NULL);
-    if (is_server && is_client) {
-        fprintf(stderr, "choose -s or -c, not both\n");
+    if (is_server == is_client) {                        // neither, or both
+        fprintf(stderr, "usage: livedemo-vpn -s SERVER.conf | -c CLIENT.conf [--tamper] [--replay]\n");
         return 1;
     }
     if (!is_server && !is_client) { // -k is now required for handshake
         fprintf(stderr, "usage: livedemo-vpn -s -k KEY.sk -a ALLOWLIST | -c SERVER_IP -k KEY.sk -p SERVER.pk [--tamper] [--replay]\n");
         return 1;
     }
-    if (!keyfile || (is_server && !allow_file) || (is_client && !pinned_file)) { // -k is now required for handshake
-        fprintf(stderr, "usage: livedemo-vpn -s -k KEY.sk -a ALLOWLIST | -c SERVER_IP -k KEY.sk -p SERVER.pk\n");
+
+
+    /* Load and setup conf */
+    struct config cfg; 
+    if (load_config(conf_file, &cfg) != 0) die(conf_file);
+    if (!cfg.sign_key[0] || !cfg.tun_addr[0] ||
+        (is_server && !cfg.clients[0]) ||
+        (is_client && (!cfg.server[0] || !cfg.server_key[0] || !cfg.tun_peer[0]))) {
+        fprintf(stderr, "%s: missing settings for %s mode\n", conf_file, is_server ? "server" : "client");
         return 1;
     }
 
 
     // identity keys set up 
     if (sodium_init() < 0) { fprintf(stderr, "sodium_init failed\n"); return 1; }
-    read_key(keyfile, my_sk, sizeof my_sk);
+    read_key(cfg.sign_key, my_sk, sizeof my_sk);
     crypto_sign_ed25519_sk_to_pk(my_pk, my_sk);        /* public key from the secret key */
-    if (!is_server) read_key(pinned_file, server_pk, sizeof server_pk);
-    if (is_server) load_allowlist(allow_file);
+    if (is_client) read_key(cfg.server_key, server_pk, sizeof server_pk);
+    if (is_server) load_allowlist(cfg.clients);
 
     char ifname[IFNAMSIZ];
     int tun  = tun_open(ifname, sizeof ifname);
     printf("using %s\n", ifname);        // Mac: utun# ; server: tun0
 
     // Give the new tunnel interface its own IP address (auto add a route to it), and fire it up 
-    char cmd[256];
-    #ifdef __APPLE__
-    snprintf(cmd, sizeof cmd, "ifconfig %s 10.8.0.2 10.8.0.1 mtu 1400 up", ifname);
-    #else  // else case for linux client 
-    snprintf(cmd, sizeof cmd, "ip addr add %s/24 dev %s && ip link set %s up mtu 1400", (is_server ? "10.8.0.1" : "10.8.0.2"), ifname, ifname);
-    #endif
-    if (system(cmd) != 0) { fprintf(stderr, "failed: %s\n", cmd); exit(1); }
+    configure_tun(ifname, &cfg);
 
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -273,13 +310,13 @@ int main(int argc, char **argv) {
     if (is_server) {                      // server: listen on 5555
         struct sockaddr_in me = {0};
         me.sin_family = AF_INET;
-        me.sin_port = htons(5555);
+        me.sin_port = htons(cfg.port);
         me.sin_addr.s_addr = htonl(INADDR_ANY);
         if (bind(sock, (struct sockaddr *)&me, sizeof me) < 0) die("bind");
     } else {// is_client                      // client: we know the server
         peer.sin_family = AF_INET;
-        peer.sin_port = htons(5555);
-        if (inet_pton(AF_INET, server_ip, &peer.sin_addr) != 1) {
+        peer.sin_port = htons(cfg.port);
+        if (inet_pton(AF_INET, cfg.server, &peer.sin_addr) != 1) {
             fprintf(stderr, "bad IP\n"); return 1;
         }
         have_peer = 1;
