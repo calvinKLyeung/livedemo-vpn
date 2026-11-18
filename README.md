@@ -34,31 +34,45 @@ A single `poll()` loop on each side watches both the tunnel fd and the UDP socke
 
 ## Quick start
 
-**First-time setup**
+**First-time setup** (run everything from the repo root)
 
 On the server:
 ```sh
-make -C src && cd src
-./keygen server && chmod 600 server.sk
+make -C src && sudo make -C src install           # → /usr/local/bin/livedemo-vpn
+src/keygen src/server && chmod 600 src/server.sk
 ```
 
 On the Mac:
 ```sh
-make -C src && cd src
-./keygen mac && chmod 600 mac.sk          # prints the Mac's public key
-scp -i KEY.pem ubuntu@SERVER_IP:~/livedemo-vpn/src/server.pk .   # copy the server's public key
+make -C src && sudo make -C src install
+src/keygen src/mac && chmod 600 src/mac.sk     # prints the Mac's public key
+scp -i KEY.pem ubuntu@SERVER_IP:~/livedemo-vpn/src/server.pk src/   # copy the server's public key
 ```
 
 Back on the server, allow the Mac:
 ```sh
-echo "MAC_PUBLIC_KEY_HEX" > authorized_clients
+echo "MAC_PUBLIC_KEY_HEX" > src/authorized_clients
 ```
 
-**Run the VPN**
+**Server as a service** (starts on boot, restarts on crash)
 ```sh
-sudo ./livedemo-vpn -s -k server.sk -a authorized_clients   # server (open UDP 5555)
-sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk     # Mac
-ping 10.8.0.1                                               # test the tunnel
+sudo mkdir -p /etc/livedemo-vpn
+sudo install -m 600 src/server.sk /etc/livedemo-vpn/
+sudo install -m 644 src/authorized_clients deploy/server.conf /etc/livedemo-vpn/
+sudo install -m 755 deploy/livedemo-vpn-net-up /usr/local/sbin/
+sudo install -m 644 deploy/livedemo-vpn.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now livedemo-vpn
+journalctl -u livedemo-vpn -f                     # logs
+```
+
+**Mac client**
+```sh
+sudo mkdir -p /usr/local/etc/livedemo-vpn
+sudo install -m 600 src/mac.sk /usr/local/etc/livedemo-vpn/
+sudo install -m 644 src/server.pk /usr/local/etc/livedemo-vpn/
+sudo cp deploy/client.conf.example /usr/local/etc/livedemo-vpn/client.conf   # then set server = SERVER_IP
+sudo livedemo-vpn -c /usr/local/etc/livedemo-vpn/client.conf
+ping 10.8.0.1                                     # test the tunnel
 ```
 
 ## Live Demo mode
@@ -89,7 +103,8 @@ Live in about 30 seconds : )
 - **Handshake:** HELLO and RESPONSE swap fresh X25519 keys, signed with each side's long-term Ed25519 key. The server checks an allow-list; the client checks a pinned server key.
 - **Packet:** `[type 1][counter 8][nonce 24][ciphertext + tag 16]`, with MTU 1400.
 - **Crypto:** XChaCha20-Poly1305 (libsodium) with fresh send and receive keys per session. The header is authenticated but not encrypted.
-- **Replay protection:** the receiver drops any counter it has already seen in the session.
+- **Replay protection:** a 64-packet sliding window (one `uint64_t` bitmap, as in IPsec) accepts late or reordered packets but drops any counter already seen. Unit-tested with `make -C src test`.
+- **Config:** settings live in a small `key = value` file (`deploy/server.conf`, `deploy/client.conf.example`); the server runs under systemd, and `livedemo-vpn-net-up` re-applies forwarding and NAT before each start.
 
 ## Self-tests
 
@@ -97,13 +112,13 @@ Live in about 30 seconds : )
 
 **Tamper:** flips one bit in every 10th packet.
 ```sh
-sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk --tamper
+sudo livedemo-vpn -c /usr/local/etc/livedemo-vpn/client.conf --tamper
 ping -c 30 10.8.0.1   # expect 10% loss; server shows bad_packets=3
 ```
 
 **Replay:** sends every packet twice.
 ```sh
-sudo ./livedemo-vpn -c SERVER_IP -k mac.sk -p server.pk --replay
+sudo livedemo-vpn -c /usr/local/etc/livedemo-vpn/client.conf --replay
 ping -c 30 10.8.0.1   # expect 0% loss, no (DUP!); server shows replays=30
 ```
 
@@ -123,7 +138,7 @@ livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overh
 
 ## Limitations
 
-One client at a time, no replay window, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
+One client at a time, packets more than 64 behind are dropped, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
 
 ## What I learned
 
