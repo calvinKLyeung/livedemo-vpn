@@ -207,7 +207,7 @@ ssize_t open_packet(struct session *s, const uint8_t *in, size_t n, uint8_t *out
 
 /* Process Conf */
 struct config {
-    char server[64], tun_addr[32], tun_peer[32];
+    char server[256], tun_addr[256], tun_peer[256];    // 64, 32, 32 was enough, change to 256 to shut the warning from v
     char sign_key[256], server_key[256], clients[256];
     int  port;
 };
