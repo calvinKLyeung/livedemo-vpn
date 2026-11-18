@@ -1,0 +1,6 @@
+server = SERVER_IP
+port = 5555
+tun_addr = 10.8.0.2
+tun_peer = 10.8.0.1
+sign_key = /usr/local/etc/livedemo-vpn/mac.sk
+server_key = /usr/local/etc/livedemo-vpn/server.pk
