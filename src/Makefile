@@ -1,5 +1,6 @@
 CFLAGS = -Wall -Wextra -g -O2 $(shell pkg-config --cflags libsodium)
 LDLIBS = $(shell pkg-config --libs libsodium)
+PREFIX ?= /usr/local
 
 all: livedemo-vpn keygen
 
@@ -16,7 +17,11 @@ test_window: test_window.c replay.c
 test: test_window
 	./test_window
 
+install: livedemo-vpn
+	install -d $(PREFIX)/bin                                   
+	install -m 755 livedemo-vpn $(PREFIX)/bin/livedemo-vpn    
+
 clean:
 	rm -f livedemo-vpn keygen test_window
 
-.PHONY: all clean
+.PHONY: all clean test install
