@@ -40,13 +40,27 @@ ip -n ld-srv link set veth-srv up; ip -n ld-cli link set veth-cli up
 
 
 start_server() {               # once, at the start
-  ip netns exec ld-srv $BIN -s -k "$TMP/srv.sk" -a "$TMP/allowed" >"$TMP/server.log" 2>&1 & SRV=$!
+  cat > "$TMP/server.conf" <<EOF
+port = 5555
+tun_addr = 10.8.0.1/24
+sign_key = $TMP/srv.sk
+authorized_clients = $TMP/allowed
+EOF
+  ip netns exec ld-srv $BIN -s "$TMP/server.conf" >"$TMP/server.log" 2>&1 & SRV=$!
   wait_for_tun ld-srv
 }
 
 start_client() {               # start_client KEY PINNED [flags...]
   local key=$1 pinned=$2; shift 2
-  ip netns exec ld-cli $BIN -c 192.168.100.1 -k "$key" -p "$pinned" "$@" >"$TMP/client.log" 2>&1 & CLI=$!
+  cat > "$TMP/client.conf" <<EOF
+server = 192.168.100.1
+port = 5555
+tun_addr = 10.8.0.2/24
+tun_peer = 10.8.0.1
+sign_key = $key
+server_key = $pinned
+EOF
+  ip netns exec ld-cli $BIN -c "$TMP/client.conf" "$@" >"$TMP/client.log" 2>&1 & CLI=$!
   wait_for_tun ld-cli
 }
 
