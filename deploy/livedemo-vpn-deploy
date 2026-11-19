@@ -4,6 +4,7 @@ set -euo pipefail
 cd /opt/livedemo-vpn
 git fetch --quiet origin main
 git reset --hard origin/main
+make -C src clean
 make -C src
 make -C src install
 install -m 755 deploy/livedemo-vpn-net-up /usr/local/sbin/livedemo-vpn-net-up
