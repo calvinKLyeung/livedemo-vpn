@@ -2,8 +2,8 @@
 
 ![tests](https://github.com/calvinKLyeung/livedemo-vpn/actions/workflows/test.yml/badge.svg)
 
-A minimal VPN in ~400 lines of C, built to understand how tools like WireGuard work.
-Client: macOS (`utun`). Server: Linux (`tun`). Learning project, not for real use.
+A minimal VPN in ~400 lines of C, built for two reasons: to learn how VPNs like WireGuard work from the ground up, and to put an app running on my laptop online in seconds, for demos and temporary sharing, without deploying it anywhere.
+Client: macOS (`utun`). Server: Linux (`tun`) on EC2.
 
 ## How it works
 
