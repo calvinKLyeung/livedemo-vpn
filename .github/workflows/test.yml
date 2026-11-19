@@ -18,3 +18,20 @@ jobs:
       - run: brew install libsodium pkg-config
       - run: make -C src test
       - run: make -C src
+
+  deploy:
+    needs: [linux-tunnel, macos-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    steps:
+      - name: Deploy to EC2
+        env:
+          KEY: ${{ secrets.DEPLOY_KEY }}
+          HOST: ${{ secrets.SERVER_HOST }}
+          KNOWN: ${{ secrets.KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          echo "$KNOWN" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes ubuntu@"$HOST"
