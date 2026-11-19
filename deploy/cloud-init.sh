@@ -21,7 +21,7 @@ git clone "$REPO" /opt/livedemo-vpn
 make -C /opt/livedemo-vpn/src
 make -C /opt/livedemo-vpn/src install
 install -m 755 /opt/livedemo-vpn/deploy/livedemo-vpn-net-up /usr/local/sbin/livedemo-vpn-net-up
-# install -m 755 /opt/livedemo-vpn/deploy/livedemo-vpn-deploy /usr/local/sbin/livedemo-vpn-deploy
+install -m 755 /opt/livedemo-vpn/deploy/livedemo-vpn-deploy /usr/local/sbin/livedemo-vpn-deploy
 install -d -m 700 /etc/livedemo-vpn
 install -m 644 /opt/livedemo-vpn/deploy/server.conf /etc/livedemo-vpn/server.conf
 install -m 644 /opt/livedemo-vpn/deploy/authorized_clients /etc/livedemo-vpn/authorized_clients

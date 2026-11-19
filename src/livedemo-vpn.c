@@ -26,6 +26,10 @@
 #define RESPONSE_LEN  (1 + PK + SIGNATURE)       /* 97 */
 #define MAX_CLIENTS 16
 
+#ifndef VERSION
+#define VERSION "unknown"
+#endif
+
 // HELLO signs:     ["LiveDemoVPN hello v1"]   [client eph_pk]
 // RESPONSE signs:  ["LiveDemoVPN response v1"][server eph_pk][client eph_pk]
 /* preset Contexts */
@@ -254,6 +258,7 @@ void configure_tun(const char *ifname, const struct config *c) {
 }
 
 int main(int argc, char **argv) {
+    fprintf(stderr, "livedemo-vpn %s starting\n", VERSION);
     const char *conf_file = NULL;
     int is_server = 0, is_client = 0;
 

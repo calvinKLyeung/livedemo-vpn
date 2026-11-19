@@ -1,0 +1,15 @@
+#!/bin/bash
+# /usr/local/sbin/livedemo-vpn-deploy: run by the deploy key, as root via sudo
+set -euo pipefail
+cd /opt/livedemo-vpn
+git fetch --quiet origin main
+git reset --hard origin/main
+make -C src
+make -C src install
+install -m 755 deploy/livedemo-vpn-net-up /usr/local/sbin/livedemo-vpn-net-up
+install -m 644 deploy/livedemo-vpn.service /etc/systemd/system/livedemo-vpn.service
+systemctl daemon-reload
+systemctl restart livedemo-vpn
+sleep 1
+systemctl is-active --quiet livedemo-vpn
+echo "deployed $(git rev-parse --short HEAD)"

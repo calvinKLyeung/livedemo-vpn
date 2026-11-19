@@ -1,4 +1,6 @@
 CFLAGS = -Wall -Wextra -g -O2 $(shell pkg-config --cflags libsodium)
+VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+CFLAGS  += -DVERSION=\"$(VERSION)\"
 LDLIBS = $(shell pkg-config --libs libsodium)
 PREFIX ?= /usr/local
 
