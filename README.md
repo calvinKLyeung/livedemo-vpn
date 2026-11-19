@@ -75,6 +75,20 @@ sudo livedemo-vpn -c /usr/local/etc/livedemo-vpn/client.conf
 ping 10.8.0.1                                     # test the tunnel
 ```
 
+## New server in one command
+
+Fresh EC2 instance to working VPN in about 10 minutes, with no manual setup on the server.
+
+1. Launch Ubuntu 24.04 (t3.micro, same security group) with `deploy/cloud-init.sh` as **User data**. On first boot it installs packages, sets up the firewall and forwarding, builds and installs the VPN, and enables the service.
+2. Wait for it, then push the one secret it can't get from the repo:
+   ```sh
+   ssh ubuntu@SERVER_IP 'cloud-init status --wait'
+   ./deploy/push-secrets.sh SERVER_IP      # copies server.sk from ~/.ldvpn and starts the VPN
+   ```
+3. Move the Elastic IP to the new instance, so the Mac's `client.conf` doesn't change.
+
+The server's identity key is backed up on the Mac (`~/.ldvpn/server.sk`, never in the repo) and reused on every rebuild, so the Mac's pinned `server.pk` keeps matching.
+
 ## Live Demo mode
 
 Put a local app online at `http://SERVER_IP:8080`.
@@ -124,7 +138,7 @@ ping -c 30 10.8.0.1   # expect 0% loss, no (DUP!); server shows replays=30
 
 ## Results
 
-Mac on Wi-Fi to EC2, all measured in one session. Throughput: median of 5 × 10 s `iperf3` runs (the three setups alternated each round). Latency: min RTT of `ping -c 50`.
+Mac on Wi-Fi to EC2 (the original server, before the rebuild), all measured in one session. Throughput: median of 5 × 10 s `iperf3` runs (the three setups alternated each round). Latency: min RTT of `ping -c 50`.
 
 | | Throughput | Min RTT |
 |---|---|---|
@@ -138,7 +152,7 @@ livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overh
 
 ## Limitations
 
-One client at a time, packets more than 64 behind are dropped, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
+One client at a time. If the server restarts, the Mac client must be restarted too (it doesn't notice the lost session yet). Packets more than 64 behind are dropped, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
 
 ## What I learned
 
