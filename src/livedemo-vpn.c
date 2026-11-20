@@ -12,6 +12,7 @@
 #include <sodium.h>
 #include <time.h>
 #include "replay.h"
+#include <errno.h>
 
 /* DATA */
 #define HDR (1 + 8 + 24)      /* type + counter + nonce = 33 (was 32) */
@@ -66,6 +67,9 @@ static uint8_t eph_pk[PK];
 static uint8_t eph_sk[crypto_kx_SECRETKEYBYTES];
 static uint8_t hello_pkt[HELLO_LEN];
 static time_t  last_hello; 
+
+/* Clock to keep client tunnel alive */
+static time_t last_sent, last_heard;
 
 
 void read_key(const char *path, uint8_t *buf, size_t len) {
@@ -273,11 +277,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: livedemo-vpn -s SERVER.conf | -c CLIENT.conf [--tamper] [--replay]\n");
         return 1;
     }
-    if (!is_server && !is_client) { // -k is now required for handshake
-        fprintf(stderr, "usage: livedemo-vpn -s -k KEY.sk -a ALLOWLIST | -c SERVER_IP -k KEY.sk -p SERVER.pk [--tamper] [--replay]\n");
-        return 1;
-    }
-
 
     /* Load and setup conf */
     struct config cfg; 
@@ -342,7 +341,10 @@ int main(int argc, char **argv) {
     
     for (;;) {
         // wake up once a sec 
-        if (poll(fds, 2, 1000) < 0) die("poll");  // poll wait for packet OR 1 sec at most 
+        if (poll(fds, 2, 1000) < 0) {
+            if (errno == EINTR) continue;           /* interrupted by a signal, e.g. waking from sleep */
+            die("poll");
+        }
         
         // every 3 secs, if bad or replays updated, print status 
         if (time(NULL) - last_report >= 3 &&
@@ -353,10 +355,32 @@ int main(int argc, char **argv) {
             last_report = time(NULL);
         }
         time_t now = time(NULL);
+        /* HELLO resend */
         if (!is_server && !sess.up && now - last_hello >= 2) {
             sendto(sock, hello_pkt, HELLO_LEN, 0, (struct sockaddr *)&peer, sizeof peer);
             last_hello = now;
+            last_sent = now; 
         }
+
+        /* Keepalive: an empty encrypted DATA packet after 15 s of not sending */
+        if (sess.up && have_peer && now - last_sent >= 15) {
+            uint8_t none[1];                               /* zero-length payload */
+            uint8_t ka[HDR + TAG];                         /* header + tag, nothing else */
+            size_t len = seal_packet(&sess, none, 0, ka);
+            sendto(sock, ka, len, 0, (struct sockaddr *)&peer, sizeof peer);
+            last_sent = now;
+        }
+
+        /* Dead tunnel, nothing heard for 45 s -> new socket, new handshake */
+        if (!is_server && sess.up && now - last_heard >= 45) {
+            fprintf(stderr, "tunnel silent, reconnecting\n");
+            close(sock);
+            sock = socket(AF_INET, SOCK_DGRAM, 0);     /* fresh socket, new source port */
+            fds[1].fd = sock;
+            start_handshake();                          /* sets sess.up = 0; HELLO goes out next pass */
+            last_heard = now;
+        }
+
 
         /* tunnel -> network */
         if (fds[0].revents & POLLIN) {            
@@ -370,7 +394,13 @@ int main(int argc, char **argv) {
             if (tamper && sess.send_ctr % 10 == 0){
                 sealed[40] ^= 0x01;                 // flip one bit inside the ciphertext
             }
-            sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
+            // Send; failures are normal while asleep or between networks, so log instead of exiting
+            if (sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer) < 0) {
+                static time_t last_err;
+                if (now != last_err) { perror("sendto"); last_err = now; }
+            }
+            last_sent = time(NULL);
+
             if (replay) // send the exact same bytes again, like a replay attack
                 sendto(sock, sealed, sealed_len, 0, (struct sockaddr *)&peer, sizeof peer);
         }
@@ -385,7 +415,7 @@ int main(int argc, char **argv) {
             uint8_t *plain = buf;                      // decrypted DATA goes into buf
             
             ssize_t n = recvfrom(sock, pkt, sizeof pkt, 0, (struct sockaddr *)&from, &len);
-            if (n < 0) die("recvfrom");                // Should try to keep this alive instead???
+            if (n < 0) { perror("recvfrom"); continue; }               // keep this alive
             if (n < 1) continue;
 
             switch (pkt[0]) {
@@ -393,16 +423,21 @@ int main(int argc, char **argv) {
                 if (is_server) {
                     uint8_t resp[RESPONSE_LEN];
                     if (handle_hello(pkt, n, resp) == 0) {
+                        last_heard = time(NULL);
                         peer = from; 
                         have_peer = 1;
                         sendto(sock, resp, RESPONSE_LEN, 0, (struct sockaddr *)&peer, sizeof peer);
+                        last_sent = time(NULL);
                         fprintf(stderr, "session up\n");
                     }
                 }
                 break;
             }
             case TYPE_RESPONSE: {
-                if (!is_server && handle_response(pkt, n) == 0) fprintf(stderr, "session up\n");
+                if (!is_server && handle_response(pkt, n) == 0) {
+                    last_heard = time(NULL);
+                    fprintf(stderr, "session up\n");
+                }
                 break;
             }
             case TYPE_DATA: {
@@ -414,11 +449,12 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "dropped bad packet (%lu so far)\n", bad_packets); 
                     break; 
                 }
-                if (!replay_ok(&sess.win, ctr)) {                //Maybe should add WIndow feature???
+                if (!replay_ok(&sess.win, ctr)) {                
                     replays++; 
                     fprintf(stderr, "dropped replay (%lu so far)\n", replays); 
                     break;
                 }
+                last_heard = time(NULL);                 /* real packet from the peer: tunnel is alive */
                 if (is_server) peer = from;              /* follow the client to a new address */
                 if (m > 0) tun_write(tun, plain, m);     /* m == 0 is a keepalive, maybe should improve this ??? */ 
                 break;
