@@ -36,8 +36,8 @@ A single `poll()` loop on each side watches both the tunnel fd and the UDP socke
 
 - **Server:** launch an EC2 instance with `deploy/cloud-init.sh` as user data, then run `./deploy/push-secrets.sh SERVER_IP`. Fresh instance to working VPN in about 10 minutes. It runs under systemd and survives reboots and crashes.
 - **Updates:** every push to `main` that passes the tests deploys automatically, using an SSH key that can only run the deploy script.
-- **Mac:** `make install`, put `client.conf` in `/usr/local/etc/livedemo-vpn/`, then `sudo livedemo-vpn -c` that file.
-- **Tests:** `make -C src test` (replay window) and `sudo ./tests/tunnel_test.sh` (9 end-to-end checks in network namespaces), both run in CI.
+- **Mac:** `make install`, put `client.conf` in `/usr/local/etc/livedemo-vpn/`, then run `livedemo-vpn-up` when you need it (nothing starts at boot). It keeps itself alive and reconnects on its own after sleep, a Wi-Fi change or a server restart.
+- **Tests:** `make -C src test` (replay window) and `sudo ./tests/tunnel_test.sh` (10 end-to-end checks in network namespaces, including a server restart), both run in CI.
 
 Step-by-step commands: [docs/setup.md](docs/setup.md).
 
@@ -52,7 +52,7 @@ visitor → SERVER_IP:8080 → tunnel → Mac :3000
 One-time: open TCP 8080 (Anywhere-IPv4) in the EC2 security group.
 
 ```sh
-ping 10.8.0.1                                        # keep the tunnel awake
+livedemo-vpn-up                                      # start the tunnel
 python3 -m http.server 3000                          # app must listen on 0.0.0.0
 ./scripts/expose.sh   -s SERVER_IP -i KEY.pem 3000   # go live
 ./scripts/unexpose.sh -s SERVER_IP -i KEY.pem 3000   # stop
@@ -69,6 +69,7 @@ Live in about 30 seconds : )
 - **Handshake:** HELLO and RESPONSE swap fresh X25519 keys, signed with each side's long-term Ed25519 key. The server checks an allow-list; the client checks a pinned server key.
 - **Packet:** `[type 1][counter 8][nonce 24][ciphertext + tag 16]`, with MTU 1400.
 - **Crypto:** XChaCha20-Poly1305 (libsodium) with fresh send and receive keys per session. The header is authenticated but not encrypted.
+- **Keepalive and reconnect:** both sides send an empty encrypted packet after 15 s of silence, so routers don't forget the UDP flow; if the client hears nothing for 45 s it opens a new socket and redoes the handshake.
 - **Replay protection:** a 64-packet sliding window (one `uint64_t` bitmap, as in IPsec) accepts late or reordered packets but drops any counter already seen. Unit-tested with `make -C src test`.
 - **Config:** settings live in a small `key = value` file (`deploy/server.conf`, `deploy/client.conf.example`); the server runs under systemd, and `livedemo-vpn-net-up` re-applies forwarding and NAT before each start.
 
@@ -84,11 +85,19 @@ Mac on Wi-Fi to EC2 (the original server, before the rebuild), all measured in o
 
 ![Throughput](bench/throughput.png)
 
+**Recovery** (watched from the server: seconds until the exposed app answered again):
+
+| Event | Recovery |
+|---|---|
+| Lid closed for 1 min, then opened | X s |
+| Wi-Fi → phone hotspot | X s |
+| Server restart | X s |
+
 livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overhead: several system calls and copies per packet on one thread. WireGuard avoids much of this by batching packets (wireguard-go) or running in the kernel.
 
 ## Limitations
 
-One client at a time. If the server restarts (including after each auto-deploy), the Mac client must be restarted too (it doesn't notice the lost session yet). Packets more than 64 behind are dropped, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
+One client at a time. After a server restart or deploy, the client takes up to about 45 s to notice and reconnect. Packets more than 64 behind are dropped, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
 
 ## What I learned
 

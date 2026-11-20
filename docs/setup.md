@@ -41,8 +41,9 @@ sudo mkdir -p /usr/local/etc/livedemo-vpn
 sudo install -m 600 src/mac.sk /usr/local/etc/livedemo-vpn/
 sudo install -m 644 src/server.pk /usr/local/etc/livedemo-vpn/
 sudo cp deploy/client.conf.example /usr/local/etc/livedemo-vpn/client.conf   # then set server = SERVER_IP
-sudo livedemo-vpn -c /usr/local/etc/livedemo-vpn/client.conf
-ping 10.8.0.1                                     # test the tunnel
+echo "alias livedemo-vpn-up='sudo livedemo-vpn -c /usr/local/etc/livedemo-vpn/client.conf'" >> ~/.zshrc && source ~/.zshrc
+livedemo-vpn-up                                   # start the tunnel; Ctrl+C to stop
+ping 10.8.0.1                                     # test it (second terminal)
 ```
 
 
@@ -83,7 +84,7 @@ GitHub secrets: `DEPLOY_KEY` (the deploy key's private half), `SERVER_HOST` (the
 
 ## Self-tests
 
-`sudo ./tests/tunnel_test.sh` runs 9 checks in network namespaces (also on every push via GitHub Actions). By hand:
+`sudo ./tests/tunnel_test.sh` runs 10 checks in network namespaces (also on every push via GitHub Actions). By hand:
 
 **Tamper:** flips one bit in every 10th packet.
 ```sh
