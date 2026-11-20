@@ -88,7 +88,7 @@ GitHub secrets: `DEPLOY_KEY` (the deploy key's private half), `SERVER_HOST` (the
 
 ## Self-tests
 
-`sudo ./tests/tunnel_test.sh` runs 11 checks in network namespaces (also on every push via GitHub Actions). By hand:
+`sudo ./tests/tunnel_test.sh` runs 10 checks in network namespaces (also on every push via GitHub Actions). By hand:
 
 **Tamper:** flips one bit in every 10th packet.
 ```sh

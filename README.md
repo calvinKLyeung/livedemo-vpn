@@ -55,7 +55,7 @@ livedemo-vpn-up --full     # all traffic through the server; Ctrl+C undoes it
 **Tests**: also run in CI on every push
 ```sh
 make -C src test               # replay window unit tests
-sudo ./tests/tunnel_test.sh    # 11 end-to-end checks in network namespaces
+sudo ./tests/tunnel_test.sh    # 10 end-to-end checks in network namespaces
 ```
 
 ## Live Demo mode

@@ -16,3 +16,5 @@ vpn.key
 *.sk
 test_window
 deploy/client.conf
+*.pem
+mini-vpn
