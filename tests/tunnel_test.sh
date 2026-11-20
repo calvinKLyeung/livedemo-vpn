@@ -106,7 +106,7 @@ check "ping works while replays are sent" ip netns exec ld-cli ping -c 3 -W 2 10
 check "server rejects replays" grep -q "dropped replay" "$TMP/server.log"
 stop_client
 
-# 6. a restarted client just reconnects (card 3)
+# 6. a restarted client just reconnects
 start_client "$TMP/cli.sk" "$TMP/srv.pk"
 check "client restart reconnects" ip netns exec ld-cli ping -c 3 -W 2 10.8.0.1
 stop_client
@@ -121,7 +121,7 @@ start_client "$TMP/stranger.sk" "$TMP/srv.pk"; sleep 3
 check "server ignores unknown clients" grep -q "unknown client" "$TMP/server.log"
 stop_client
 
-# 9-10. server restart: the client notices the silence and reconnects by itself (card 8)
+# 9-10. server restart: the client notices the silence and reconnects by itself
 #       last, because restarting the server wipes server.log
 start_client "$TMP/cli.sk" "$TMP/srv.pk"; wait_for_session
 kill $SRV; wait $SRV 2>/dev/null

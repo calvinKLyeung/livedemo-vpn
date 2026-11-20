@@ -1,0 +1,28 @@
+#!/bin/sh
+# livedemo-vpn-up [--full]: start the Mac client; --full also sends all traffic through the VPN
+CONF=/usr/local/etc/livedemo-vpn/client.conf
+SBIN=/usr/local/sbin
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"           # ask for the password once
+
+# Live Demo mode: just the tunnel
+case "$1" in
+  "")     exec livedemo-vpn -c "$CONF" ;;            
+  --full) ;;
+  *)      echo "usage: livedemo-vpn-up [--full]"; exit 1 ;;
+esac
+
+
+# full VPN mode: start the client, wait for its utun, then add routes, DNS and the IPv6 block
+SERVER=$(awk '$1 == "server" {print $3}' "$CONF")
+livedemo-vpn -c "$CONF" & VPN=$!
+for i in $(seq 1 20); do                               # up to 10 s
+  IF=$(ifconfig | awk '/^utun/ {i=$1} /inet 10\.8\.0\.2 / {sub(":", "", i); print i}')
+  [ -n "$IF" ] && break
+  sleep 0.5
+done
+[ -n "$IF" ] || { echo "tunnel did not come up"; kill $VPN; exit 1; }
+
+trap '"$SBIN/livedemo-vpn-mac-down" "$IF" "$SERVER"; kill $VPN 2>/dev/null' EXIT   # always undo
+trap 'exit 0' INT TERM                                 # Ctrl+C: run the EXIT trap above
+"$SBIN/livedemo-vpn-mac-up" "$IF" "$SERVER"
+wait $VPN
