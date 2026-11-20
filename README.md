@@ -2,7 +2,7 @@
 
 ![tests](https://github.com/calvinKLyeung/livedemo-vpn/actions/workflows/test.yml/badge.svg)
 
-A minimal VPN in ~400 lines of C, built for two reasons: to learn how VPNs like WireGuard work from the ground up, and to put an app running on my laptop online in seconds, for demos and temporary sharing, without deploying it anywhere.
+A minimal VPN in ~450 lines of C, built for two reasons: to learn how VPNs like WireGuard work from the ground up, and to put an app running on my laptop online in seconds, for demos and temporary sharing, without deploying it anywhere.
 Client: macOS (`utun`). Server: Linux (`tun`) on EC2.
 
 ## How it works
@@ -34,12 +34,29 @@ A single `poll()` loop on each side watches both the tunnel fd and the UDP socke
 
 ## Setup
 
-- **Server:** launch an EC2 instance with `deploy/cloud-init.sh` as user data, then run `./deploy/push-secrets.sh SERVER_IP`. Fresh instance to working VPN in about 10 minutes. It runs under systemd and survives reboots and crashes.
-- **Updates:** every push to `main` that passes the tests deploys automatically, using an SSH key that can only run the deploy script.
-- **Mac:** `make install`, put `client.conf` in `/usr/local/etc/livedemo-vpn/`, then run `livedemo-vpn-up` when you need it (nothing starts at boot). It keeps itself alive and reconnects on its own after sleep, a Wi-Fi change or a server restart.
-- **Tests:** `make -C src test` (replay window) and `sudo ./tests/tunnel_test.sh` (10 end-to-end checks in network namespaces, including a server restart), both run in CI.
+**Server**: a fresh EC2 instance in about 10 minutes
+```sh
+# launch Ubuntu 24.04 with deploy/cloud-init.sh as User data, then:
+ssh ubuntu@SERVER_IP 'cloud-init status --wait'
+./deploy/push-secrets.sh SERVER_IP      # copy the server key, start the VPN
+```
 
-Step-by-step commands: [docs/setup.md](docs/setup.md).
+**Updates**: automatic
+```sh
+git push        # tests pass → the server pulls, builds and restarts itself
+```
+
+**Mac**: after the one-time keys and config ([docs/setup.md](docs/setup.md))
+```sh
+livedemo-vpn-up            # tunnel only (Live Demo mode); Ctrl+C to stop
+livedemo-vpn-up --full     # all traffic through the server; Ctrl+C undoes it
+```
+
+**Tests**: also run in CI on every push
+```sh
+make -C src test               # replay window unit tests
+sudo ./tests/tunnel_test.sh    # 11 end-to-end checks in network namespaces
+```
 
 ## Live Demo mode
 
@@ -67,24 +84,21 @@ Live in about 30 seconds : )
 Send all of the Mac's traffic through the server, not just the tunnel network:
 
 ```sh
-livedemo-vpn-up                                   # terminal 1: the tunnel
-sudo ./scripts/mac-up.sh utunN SERVER_IP          # terminal 2: routes, DNS 1.1.1.1, IPv6 off
-curl ifconfig.me                                  # → SERVER_IP
-sudo ./scripts/mac-down.sh utunN SERVER_IP        # undo
+livedemo-vpn-up --full     # tunnel + all traffic through the server
+curl ifconfig.me           # in another terminal: the server's IP
+# Ctrl+C turns it all off again
 ```
 
-`mac-up.sh` keeps a host route to the server on Wi-Fi, sends everything else into the tunnel with two `/1` routes, points DNS at 1.1.1.1 (reached through the tunnel), and turns IPv6 off, since the tunnel only carries IPv4.
+`--full` starts the client, finds its `utunN`, and runs `scripts/mac-up.sh`: a host route keeps the tunnel's own packets on Wi-Fi, two `/1` routes send everything else into the tunnel, DNS points at 1.1.1.1 (reached through the tunnel), and IPv6 is turned off, since the tunnel only carries IPv4. When the client stops, for any reason, it runs `scripts/mac-down.sh` to restore the routes, DNS and IPv6.
 
-**Leak test** ([Mullvad connection check](https://mullvad.net/en/check)), on UBC Wi-Fi:
+**Leak test** ([Mullvad connection check](https://mullvad.net/en/check)), on campus Wi-Fi with IPv6:
 
 | | VPN off | Full VPN mode |
 |---|---|---|
-| Public IPv4 | UBC, Vancouver | the EC2 server, Ohio |
-| DNS resolvers seen from | Vancouver | Ohio (through the tunnel) |
+| Public IPv4 | campus network | the EC2 server |
+| DNS resolvers seen from | my city | the server's region (through the tunnel) |
 | WebRTC | real campus IP | the server's IP |
 | My IPv6 | in use | blocked |
-
-![Before](docs/leak-before.png) ![After](docs/leak-after.png)
 
 ## Design
 
@@ -121,7 +135,7 @@ livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overh
 
 ## Limitations
 
-One client at a time. After a server restart or deploy, the client takes up to about 45 s to notice and reconnect. Packets more than 64 behind are dropped, no re-keying during long sessions. IPv4 only: in full VPN mode IPv6 is blocked rather than tunnelled. No kill switch: if the client crashes or is stopped in full VPN mode without `mac-down.sh`, traffic falls back to plain Wi-Fi without warning (blocking that would need macOS's packet filter, pf; future work). A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
+One client at a time. After a server restart or deploy, the client takes up to about 45 s to notice and reconnect. Packets more than 64 behind are dropped, no re-keying during long sessions. IPv4 only: in full VPN mode IPv6 is blocked rather than tunnelled. No kill switch: if the client stops in full VPN mode, traffic falls back to plain Wi-Fi without warning (blocking that would need macOS's packet filter, pf; future work). A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
 
 ## What I learned
 
