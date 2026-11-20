@@ -62,6 +62,30 @@ Live in about 30 seconds : )
 
 **Limitations:** plain HTTP from visitors to the server; your Mac must stay awake and connected.
 
+## Full VPN mode
+
+Send all of the Mac's traffic through the server, not just the tunnel network:
+
+```sh
+livedemo-vpn-up                                   # terminal 1: the tunnel
+sudo ./scripts/mac-up.sh utunN SERVER_IP          # terminal 2: routes, DNS 1.1.1.1, IPv6 off
+curl ifconfig.me                                  # → SERVER_IP
+sudo ./scripts/mac-down.sh utunN SERVER_IP        # undo
+```
+
+`mac-up.sh` keeps a host route to the server on Wi-Fi, sends everything else into the tunnel with two `/1` routes, points DNS at 1.1.1.1 (reached through the tunnel), and turns IPv6 off, since the tunnel only carries IPv4.
+
+**Leak test** ([Mullvad connection check](https://mullvad.net/en/check)), on UBC Wi-Fi:
+
+| | VPN off | Full VPN mode |
+|---|---|---|
+| Public IPv4 | UBC, Vancouver | the EC2 server, Ohio |
+| DNS resolvers seen from | Vancouver | Ohio (through the tunnel) |
+| WebRTC | real campus IP | the server's IP |
+| My IPv6 | in use | blocked |
+
+![Before](docs/leak-before.png) ![After](docs/leak-after.png)
+
 ## Design
 
 - **UDP:** avoids TCP-over-TCP meltdown, and one datagram = one packet.
@@ -97,7 +121,7 @@ livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overh
 
 ## Limitations
 
-One client at a time. After a server restart or deploy, the client takes up to about 45 s to notice and reconnect. Packets more than 64 behind are dropped, no re-keying during long sessions, IPv4 only. A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
+One client at a time. After a server restart or deploy, the client takes up to about 45 s to notice and reconnect. Packets more than 64 behind are dropped, no re-keying during long sessions. IPv4 only: in full VPN mode IPv6 is blocked rather than tunnelled. No kill switch: if the client crashes or is stopped in full VPN mode without `mac-down.sh`, traffic falls back to plain Wi-Fi without warning (blocking that would need macOS's packet filter, pf; future work). A replayed old HELLO can't reveal any keys, but it replaces the real client's session and cuts it off until it reconnects (WireGuard adds a timestamp to prevent this). The handshake is a simplified design, not WireGuard's Noise.
 
 ## What I learned
 
