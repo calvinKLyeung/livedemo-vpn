@@ -123,15 +123,9 @@ Mac on Wi-Fi to EC2 (the original server, before the rebuild), all measured in o
 
 ![Throughput](bench/throughput.png)
 
-**Recovery** (watched from the server: seconds until the exposed app answered again):
-
-| Event | Recovery |
-|---|---|
-| Lid closed for 1 min, then opened | X s |
-| Wi-Fi → phone hotspot | X s |
-| Server restart | X s |
-
 livedemo-vpn adds under 1 ms of latency but loses throughput to per-packet overhead: several system calls and copies per packet on one thread. WireGuard avoids much of this by batching packets (wireguard-go) or running in the kernel.
+
+**Recovery:** after closing the lid, switching Wi-Fi to a hotspot, or restarting the server, the exposed app answered again within about 10–30 s, with no manual steps (a server restart can take up to about 45 s by design).
 
 ## Limitations
 
